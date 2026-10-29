@@ -1,0 +1,6 @@
+# Secret-free template for the repository root .env. Set distinct local passwords.
+WEB_PORT=8080
+MYSQL_DATABASE=docker_image_creator
+MYSQL_USER=docker_image_creator
+MYSQL_PASSWORD=
+MYSQL_ROOT_PASSWORD=

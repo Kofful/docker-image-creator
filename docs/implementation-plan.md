@@ -1,6 +1,8 @@
 # Implementation plan
 
-All milestones below are pending. Planning documents are the only deliverable so far.
+Milestone 1 is in progress. Vue/Nest source, shared health-response types, pnpm workspace manifests, strict TypeScript configuration, formatting/type-check scripts, and three-service Compose infrastructure are present. Milestones 2–7 remain pending.
+
+Scaffold checks completed: Compose configuration validation with explicit dummy credentials and no environment-file loading; JSON parsing and whitespace validation; shared-contract type checking and five TypeScript transpilation syntax checks using a cached compiler. Not yet complete: workspace dependency installation, a resolved committed pnpm lockfile, formatting/full application type checks/builds, runner scaffolding, container boot, and MySQL readiness. Registry DNS and Docker daemon access are unavailable in the implementation environment. See [local setup](local-setup.md) for exact commands and remaining gates. No application persistence or Prisma schema has been added.
 
 | Milestone | Deliverables | Completion gate |
 | --- | --- | --- |

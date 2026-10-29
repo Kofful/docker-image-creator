@@ -1,0 +1,20 @@
+{
+  "name": "@docker-image-creator/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@docker-image-creator/contracts": "workspace:*",
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.2",
+    "vite": "7.3.1",
+    "vue-tsc": "3.2.2"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "docker-image-creator",
+  "private": true,
+  "packageManager": "pnpm@10.34.9",
+  "engines": { "node": ">=22.23.4 <23" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json apps packages infra docs",
+    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json apps packages infra docs"
+  },
+  "devDependencies": {
+    "@types/node": "22.9.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3"
+  }
+}

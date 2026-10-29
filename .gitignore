@@ -29,9 +29,6 @@ logs/
 # Local environment and secrets; keep secret-free examples trackable
 *.env
 .env
-.env.*
-!.env.example
-!.env.*.example
 
 # Generated Prisma clients; keep schemas and migrations trackable
 **/prisma/generated/

@@ -1,0 +1,27 @@
+# Allowlist build inputs so local configuration and secrets never enter the context.
+**
+!package.json
+!pnpm-workspace.yaml
+!pnpm-lock.yaml
+!tsconfig.base.json
+!apps/
+!apps/**/
+!apps/**/package.json
+!apps/**/tsconfig.json
+!apps/**/Dockerfile
+!apps/web/index.html
+!apps/web/vite.config.ts
+!apps/web/nginx.conf
+!apps/**/src/
+!apps/**/src/**
+!packages/
+!packages/**/
+!packages/**/package.json
+!packages/**/tsconfig.json
+!packages/**/src/
+!packages/**/src/**
+**/node_modules
+**/dist
+**/*.env
+**/.env
+**/.env.*

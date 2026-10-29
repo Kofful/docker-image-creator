@@ -1,24 +1,38 @@
 # Architecture
 
-## Proposed stack
+## Implemented scaffold
+
+`infra/docker-compose.yml` builds `docker-image-creator-web:local` from `apps/web/Dockerfile` and `docker-image-creator-api:local` from `apps/api/Dockerfile`, and runs `mysql:8.4.11`. All three join the Compose project-scoped `infrastructure` bridge network. MySQL stores data in the project-scoped `mysql-data` named volume. Neither API nor MySQL publishes a host port. Web publishes port 8080 on loopback by default.
+
+Deployment configuration comes from the repository root `.env`, explicitly selected with `docker compose --env-file .env -f infra/docker-compose.yml`. Web port, MySQL database/account names, and passwords are interpolated from that file, with shell overrides supported. Only the declared MySQL variables are passed into the MySQL container; the API currently needs no database configuration. `infra/config.example` documents the keys without secrets. Agent checks use a separate secret-free configuration file and never load the root `.env`.
+
+The Vue 3/Vite application uses strict TypeScript and `<script setup lang="ts">`. Its built assets are served by Nginx, which proxies `/api/` to `api:3000`. Nest exposes only `GET /api/v1/health`, with a shared response interface in `packages/contracts`. The endpoint checks API liveness only, not database connectivity. Compose waits for an authenticated MySQL `SELECT 1` before starting API, then for API health before starting web, using [Compose health dependencies](https://docs.docker.com/compose/how-tos/startup-order/).
+
+Build stages use `node:22.23.4-bookworm-slim` and pnpm 10.34.9. The frontend runtime uses `nginx:1.28.0-alpine`; the API runtime runs as the `node` user. No service mounts the Docker socket. Build contexts allowlist source/config inputs and exclude environment files, dependencies, and runtime artifacts.
+
+The pnpm workspace and package versions are defined, but a resolved lockfile could not be generated because registry DNS was unavailable, including on an elevated retry. Dockerfiles temporarily install without a frozen lockfile. Generating and committing `pnpm-lock.yaml`, then changing both installs to `--frozen-lockfile`, is a remaining scaffold gate. Container boot is also unverified because Docker daemon access was denied. See [local setup](local-setup.md).
+
+## Target stack
 - Backend: NestJS with strict TypeScript, validation, REST endpoints, and an authenticated terminal gateway.
 - Frontend: Vue 3, Vite, Vue Router, Pinia for session/application state, and xterm.js for terminal display.
 - Persistence: MySQL with Prisma migrations; MySQL-backed sessions and durable operation records avoid requiring Redis for the MVP.
 - Agent: provider-neutral adapter producing structured validated output through a bounded generation loop.
 - Execution: separate NestJS runner process using Docker Compose v2 for lifecycle operations and the Docker Engine exec API for interactive terminals. Select the maintained Engine client during implementation.
-- Workspace: pnpm; exact Node, package, Docker, and MySQL versions must be pinned after compatibility checks at scaffold time.
+- Workspace: pnpm; initial versions are pinned in manifests and Dockerfiles, with clean installation and full compatibility checks still pending.
 
-## Planned repository
+## Repository layout
 ```text
 apps/
   api/                 # auth, catalog, configs, generation, operations, terminal gateway
   web/                 # Vue pages, UI components, API client, terminal adapter
-  runner/              # operation leases, Compose execution, Docker exec, reconciliation
+  runner/              # planned; not scaffolded/deployed in the three-service setup
 packages/
   contracts/           # versioned schemas, API types, operation/terminal events
 infra/                 # application Compose files and development infrastructure
 docs/                  # planning and subsequent operational documentation
 ```
+
+`apps/api`, `apps/web`, `packages/contracts`, and `infra` now exist. Runner scaffolding remains part of milestone 1; no execution worker is active.
 
 ## Request and execution flow
 The browser talks only to the API. The API validates requests, checks ownership, persists revisions and operations, and makes bounded generation calls. A separate runner claims durable operations from MySQL using atomic leases and executes them against its Docker daemon. The API relays terminal traffic over an authenticated private runner connection; the browser cannot reach the runner directly.
