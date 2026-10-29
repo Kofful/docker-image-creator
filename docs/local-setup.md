@@ -2,15 +2,15 @@
 
 ## Current behavior
 
-The initial stack contains Vue frontend source in `apps/web`, Nest backend source in `apps/api`, shared transport types in `packages/contracts`, and infrastructure configuration in `infra/docker-compose.yml`. MySQL uses the official image; no application database schema or migrations exist yet. The API health endpoint reports liveness only. The web page displays the API connection status.
+The stack contains Vue frontend source in `apps/web`, Nest backend source in `apps/api`, shared transport types in `packages/contracts`, and infrastructure configuration in `infra/docker-compose.yml`. Prisma schema and committed MySQL migrations now create users, sessions, and refresh tokens. The [auth API](authentication.md) implements registration/login/refresh_token/me/logout. The health endpoint reports liveness only, and the web page still displays the API connection status.
 
-This is a partial implementation of milestone 1. Account management, application database access, generation, stack execution, and terminals remain planned.
+Milestone 1's verification gates remain incomplete. The backend portion of milestone 2 is implemented in source, with endpoint execution still unverified. Browser auth pages, generation, stack execution, and terminals remain planned.
 
 ## Start the three services
 
 Install Docker Engine and Docker Compose v2. Commands below run from the repository root. Compose v2.29.1 is available in the implementation environment; container execution was not available for verification.
 
-Create or update `.env` in the repository root using the keys in `infra/config.example`. Set distinct, nonempty `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` values. The root `.env` is ignored by Git. If it already exists, preserve its other settings. Then start the services:
+As a human operator, create or update `.env` in the repository root using the keys in `.env.example`. Set distinct, nonempty `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` values. Set `DATABASE_URL` to the application account at `mysql:3306`, URL-encoding username/password components and matching the database/account initialization settings. Set `AUTH_ACCESS_TOKEN_SECRET` to a private random signing key containing at least 32 bytes. Set `AUTH_TRUSTED_ORIGINS` to the exact browser origin, including the port; adjust it if `WEB_PORT` changes. The root `.env` is ignored by Git. If it already exists, preserve its other settings. Then start the services:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml up --build -d --wait
@@ -23,7 +23,7 @@ curl --fail http://127.0.0.1:8080/api/v1/health
 docker compose --env-file .env -f infra/docker-compose.yml ps
 ```
 
-The endpoint returns `{"status":"ok","service":"api"}`. MySQL should report healthy after an authenticated query against the application database. Web, API, and MySQL join the same project-scoped bridge network and resolve each other by service name. Nginx proxies the browser's `/api/` requests to `api:3000`, so no browser-facing API hostname or CORS configuration is required.
+The endpoint returns `{"status":"ok","service":"api"}`. MySQL should report healthy after an authenticated query against the application database. The API container deploys migrations before startup and opens a database connection during Nest initialization. Web, API, and MySQL join the same project-scoped bridge network and resolve each other by service name. Nginx proxies the browser's `/api/` requests to `api:3000`, so no browser-facing API hostname or CORS configuration is required.
 
 Stop the stack while preserving its database:
 
@@ -35,7 +35,7 @@ Use the same passwords when restarting an existing volume: the image's initializ
 
 ## Environment reference
 
-`infra/config.example` is a secret-free template for the root `.env`; password values are intentionally empty. Start/stop commands explicitly select the root file with `--env-file .env`, since the Compose file lives under `infra`. Compose interpolates the referenced variables and passes the MySQL settings through the service's `environment` mapping. Shell variables override values from the file; unset previously exported values when you want the file's settings to apply. See [Docker's interpolation documentation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/).
+The root `.env.example` is the canonical secret-free template for `.env`; real passwords and signing keys belong only in the private deployment configuration. Start/stop commands explicitly select the root file with `--env-file .env`, since the Compose file lives under `infra`. Compose interpolates the referenced variables and passes the MySQL settings through the service's `environment` mapping. Shell variables override values from the file; unset previously exported values when you want the file's settings to apply. See [Docker's interpolation documentation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/).
 
 Agents must not access the real `.env`. Agent checks use explicit secret-free configuration instead. Do not print fully resolved Compose configuration with real credentials; use `config --quiet` for validation.
 
@@ -46,8 +46,11 @@ Agents must not access the real `.env`. Agent checks use explicit secret-free co
 | `MYSQL_PASSWORD` | Required, nonempty | Initializes the MySQL application account |
 | `MYSQL_ROOT_PASSWORD` | Required, nonempty | Initializes the separate MySQL root account |
 | `WEB_PORT` | `8080` | Host web port, published only on `127.0.0.1` |
+| `DATABASE_URL` | Required | `mysql://<encoded-user>:<encoded-password>@mysql:3306/<database>` in Compose; no query options/fragments |
+| `AUTH_ACCESS_TOKEN_SECRET` | Required, at least 32 bytes | Private random HS256 signing key; changing it invalidates access tokens |
+| `AUTH_TRUSTED_ORIGINS` | Required for source startup; Compose default `http://127.0.0.1:8080` | Comma-separated exact HTTP(S) origins, with no trailing slash; add `http://127.0.0.1:5173` for Vite |
 
-MySQL port 3306 and API port 3000 are accessible only within the infrastructure network. The API does not yet consume database credentials. No LLM credentials are needed.
+MySQL port 3306 and API port 3000 are accessible only within the infrastructure network. The API consumes application database credentials; it never needs the MySQL root password. Prisma CLI and API runtime read process environment only and do not load environment files. No LLM credentials are needed. The auth variables listed above are documented in the root `.env.example`.
 
 ## Workspace checks
 
@@ -55,21 +58,26 @@ Use Node.js 22.23.4 and pnpm 10.34.9. The Node line satisfies the documented [Ne
 
 ```bash
 corepack pnpm install
+corepack pnpm lint
 corepack pnpm typecheck
 corepack pnpm build
 corepack pnpm format:check
+corepack pnpm --filter @docker-image-creator/api prisma:validate
+corepack pnpm test
 ```
 
-The first successful install must produce `pnpm-lock.yaml`; review and commit it, change both Dockerfiles to `pnpm install --frozen-lockfile`, and verify a fresh frozen install before marking milestone 1 complete. Current Dockerfiles use bootstrap installs without a frozen lockfile, so transitive dependencies are not yet reproducible. No lint or automated test suite exists yet.
+The first successful install must produce `pnpm-lock.yaml`; review and commit it, change both Dockerfiles to `pnpm install --frozen-lockfile`, and verify a fresh frozen install before marking milestone 1 complete. Current Dockerfiles use bootstrap installs without a frozen lockfile, so transitive dependencies are not yet reproducible. ESLint now checks API/contracts TypeScript and the auth test harness; frontend lint configuration remains outside this backend slice. API build/typecheck scripts generate the Prisma client first. The MySQL endpoint suite requires Docker and creates its own disposable database with generated test-only credentials; it does not load any environment file.
 
-For local source development, after a successful build, run these commands in separate terminals:
+For local source development, explicitly export `DATABASE_URL`, `AUTH_ACCESS_TOKEN_SECRET`, and `AUTH_TRUSTED_ORIGINS` in your shell without committing or printing credentials. Use a reachable development MySQL server: the Compose database has no host port. After installing dependencies, deploy migrations and build, then run API and web in separate terminals:
 
 ```bash
+corepack pnpm --filter @docker-image-creator/api db:migrate
+corepack pnpm build
 corepack pnpm --filter @docker-image-creator/api start
 corepack pnpm --filter @docker-image-creator/web dev
 ```
 
-Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. MySQL is not required for the current liveness-only API.
+Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. API startup now requires MySQL and the auth settings, even if only liveness is used. Keep `http://127.0.0.1:5173` in trusted origins when using Vite.
 
 ## Verification record and remaining prerequisites
 
@@ -77,11 +85,15 @@ Compose configuration was validated without starting containers, using explicit 
 
 ```bash
 MYSQL_PASSWORD=validation-only MYSQL_ROOT_PASSWORD=validation-root-only \
+  DATABASE_URL=mysql://validation:validation@mysql:3306/validation \
+  AUTH_ACCESS_TOKEN_SECRET=validation-only-key-with-at-least-32-bytes \
   docker compose --env-file /dev/null -f infra/docker-compose.yml config --quiet
 ```
 
-The root-file configuration change was also checked with a temporary secret-free input file: custom web port and MySQL values were interpolated correctly, omitted optional values used their defaults, all three services retained the shared network, and empty passwords were rejected. The real root `.env` was not accessed.
+Earlier scaffold verification also checked a temporary secret-free input file: custom web port and MySQL values were interpolated correctly, omitted optional values used their defaults, all three services retained the shared network, and empty passwords were rejected. The real root `.env` was not accessed. Auth's updated Compose configuration passed the explicit dummy-value command above.
 
-Source/config JSON parsing and whitespace checks were also run. A cached TypeScript 5.9.3 compiler was installed offline under `/tmp/docker-image-creator-check`; shared-contract checking passed with `node /tmp/docker-image-creator-check/node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json`. Transpilation syntax checks also passed for five TypeScript source/config files; these do not validate application imports or Vue templates.
+For the auth change, shared-contract checking passed with the cached TypeScript 5.9.3 compiler: `node /tmp/docker-image-creator-check/node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json`. Transpilation syntax checks passed for 15 API/test/config/contracts TypeScript files, six JSON files parsed, and `node --check` passed for the test harness and ESLint configuration. These syntax checks do not validate application imports, generated Prisma types, or Vue templates. Whitespace checks exclude all protected environment files.
 
-npm registry access failed with `EAI_AGAIN` even after an elevated retry, preventing workspace package installation and lockfile generation. Docker daemon access was denied even after an elevated retry, preventing image builds, service startup, HTTP checks, network/DNS verification, and real MySQL readiness checks. Formatting, full application type checking, and application builds have not passed verification. These remain explicit milestone 1 gates.
+The migration SQL also executed successfully during fresh, isolated MySQL 8.0.42 initialization using `mysqld --no-defaults --initialize-insecure --init-file=<temporary SQL> --datadir=<fresh /tmp directory> --secure-file-priv=NULL`. The temporary SQL selected a disposable database and contained the committed migration unchanged; all three table files were created, with no SQL errors. No existing databases were accessed, and no listening server was left running. This checks MySQL DDL execution, not Prisma deployment, transaction behavior, or HTTP integration against the target MySQL 8.4.11 image.
+
+`npm run lint`, `npm run format:check`, `npm run typecheck`, `npm run build`, and the API's `npm test` were attempted but could not start their tools: ESLint/Prettier/pnpm are not installed. Downloading pinned pnpm and resolving Prisma failed with `EAI_AGAIN`, including elevated retries. Workspace dependencies and a lockfile therefore remain unavailable. Direct execution of the auth harness also failed because Docker daemon access was denied, including after elevation. A temporary MySQL server could initialize but could not bind a Unix socket (`Operation not permitted`), so it could not replace Docker for HTTP integration. Formatting, ESLint, full application type checking/builds, Prisma validation/deployment, and endpoint tests have not passed verification. They remain explicit prerequisites; no mocked database results are reported as integration success.

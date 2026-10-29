@@ -8,6 +8,7 @@ node_modules/
 
 # NestJS, Vue/Vite, and shared TypeScript build output
 dist/
+dist-test/
 build/
 .vite/
 .cache/

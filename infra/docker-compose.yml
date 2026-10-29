@@ -27,6 +27,9 @@ services:
       dockerfile: apps/api/Dockerfile
     environment:
       NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL with URL-encoded MySQL credentials}
+      AUTH_ACCESS_TOKEN_SECRET: ${AUTH_ACCESS_TOKEN_SECRET:?Set AUTH_ACCESS_TOKEN_SECRET to at least 32 random bytes}
+      AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://127.0.0.1:8080}
     depends_on:
       mysql:
         condition: service_healthy

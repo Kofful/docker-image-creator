@@ -3,16 +3,34 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "start": "node dist/main.js"
+    "build": "pnpm prisma:generate && tsc -p tsconfig.json",
+    "typecheck": "pnpm prisma:generate && tsc --noEmit -p tsconfig.test.json",
+    "start": "node dist/main.js",
+    "prisma:generate": "prisma generate",
+    "prisma:validate": "prisma validate",
+    "db:migrate": "prisma migrate deploy",
+    "test": "pnpm build && tsc -p tsconfig.test.json && node scripts/test-auth.mjs"
   },
   "dependencies": {
     "@docker-image-creator/contracts": "workspace:*",
     "@nestjs/common": "11.1.6",
     "@nestjs/core": "11.1.6",
+    "@nestjs/jwt": "11.0.1",
     "@nestjs/platform-express": "11.1.6",
+    "@nestjs/throttler": "6.4.0",
+    "@prisma/adapter-mariadb": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "argon2": "0.44.0",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.14.2",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "11.1.6",
+    "@types/express": "5.0.5",
+    "@types/supertest": "6.0.3",
+    "prisma": "7.10.0",
+    "supertest": "7.1.4"
   }
 }

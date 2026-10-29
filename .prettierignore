@@ -1,0 +1,10 @@
+**/node_modules/
+**/dist/
+**/dist-test/
+**/generated/
+*.env
+.env
+.env.*
+**/*.env
+**/.env
+**/.env.*

@@ -9,6 +9,9 @@
 !apps/**/package.json
 !apps/**/tsconfig.json
 !apps/**/Dockerfile
+!apps/api/prisma.config.ts
+!apps/api/prisma/
+!apps/api/prisma/**
 !apps/web/index.html
 !apps/web/vite.config.ts
 !apps/web/nginx.conf
@@ -22,6 +25,8 @@
 !packages/**/src/**
 **/node_modules
 **/dist
+**/dist-test
+**/generated
 **/*.env
 **/.env
 **/.env.*

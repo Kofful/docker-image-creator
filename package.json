@@ -6,12 +6,17 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json apps packages infra docs",
-    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json apps packages infra docs"
+    "lint": "eslint apps/api packages/contracts",
+    "test": "pnpm --filter @docker-image-creator/api test",
+    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs",
+    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.1",
     "@types/node": "22.9.0",
+    "eslint": "9.39.1",
     "prettier": "3.6.2",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.48.0"
   }
 }

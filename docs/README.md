@@ -1,6 +1,6 @@
 # Docker Image Creator
 
-Status: initial Vue/Nest source and three-service infrastructure Compose setup are present. The web page checks the API health endpoint. MySQL is provisioned by Compose, but application persistence, authentication, generation, the runner, and terminals are not implemented. Dependency installation and container startup have not been verified; see [local setup](local-setup.md).
+Status: Vue/Nest source and three-service infrastructure Compose setup are present. The API now includes email/password registration, login, rotating refresh tokens, current user, logout, Prisma migrations, and a disposable-MySQL endpoint test suite. Dependency installation and endpoint execution remain unverified because registry access fails; Docker access is also unavailable. The web page still checks API health only. Auth pages, generation, the runner, and terminals remain planned. See [local setup](local-setup.md).
 
 ## Document map
 
@@ -9,6 +9,7 @@ Status: initial Vue/Nest source and three-service infrastructure Compose setup a
 | [Product requirements](product-requirements.md) | Scope, screens, workflows, and acceptance criteria |
 | [Architecture](architecture.md) | Workspace, services, trust boundaries, and technology choices |
 | [Data and API](data-and-api.md) | Persistence model, REST endpoints, and terminal protocol |
+| [Authentication API](authentication.md) | Token payloads, rotation/revocation, migration and test commands |
 | [Generation and runtime](generation-and-runtime.md) | LLM contract, Compose policies, and lifecycle behavior |
 | [Security](security.md) | Authentication, isolation, secrets, and execution controls |
 | [Implementation plan](implementation-plan.md) | Ordered milestones and verification gates |

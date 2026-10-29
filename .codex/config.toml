@@ -8,13 +8,4 @@ default_permissions = "project-env-protected"
 
 [permissions.project-env-protected]
 extends = ":workspace"
-
-[permissions.project-env-protected.filesystem]
-# Linux expands recursive deny globs before each sandboxed process starts.
-glob_scan_max_depth = 32
-
-[permissions.project-env-protected.filesystem.":workspace_roots"]
-".env" = "deny"
-"**/.env" = "deny"
-"**/*.env" = "deny"
-"**/.env.*" = "deny"
+":workspace_roots" = { ".env.example" = "allow", "**/.env.example" = "allow", ".env" = "deny", "**/.env" = "deny", "**/*.env" = "deny", "**/.env.*" = "deny" }

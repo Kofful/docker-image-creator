@@ -1,12 +1,13 @@
 # Data and API contracts
 
-## Planned entities
+## Implemented auth entities and planned application entities
 Use server-generated opaque IDs, UTC timestamps, foreign keys, and indexes for ownership and operation polling.
 
 | Entity | Key fields and invariants |
 | --- | --- |
-| User | ID, normalized unique email, password hash, timestamps |
-| Session | User ID, unique hashed random token, expiry, revocation; no plaintext bearer token |
+| User (implemented) | ID, normalized unique email, password hash, timestamps |
+| Session (implemented) | User ID, absolute seven-day expiry, revocation, creation time; checked on every access-token request |
+| RefreshToken (implemented) | Session ID, unique SHA-256 hash, creation/consumption timestamps; consumed hashes retained for replay detection |
 | Configuration | Owner ID, name, description, current revision ID, timestamps, deletion state |
 | ConfigRevision | Config ID, monotonic version, schema/policy/catalog versions, validated structured spec, masked Compose artifact, digest; immutable |
 | GenerationAttempt | Owner/config ID, status, bounded redacted inputs/output diagnostics, provider/model metadata, usage, deadline |
@@ -19,13 +20,14 @@ Use server-generated opaque IDs, UTC timestamps, foreign keys, and indexes for o
 Enforce `(configId, version)` uniqueness, scope idempotency keys by owner and action, and enforce operation serialization transactionally. Store service definitions in the revision spec; service instances are observed runtime records. Secret references needed by retained revisions must not be deleted implicitly.
 
 ## REST outline
-All endpoints except registration/login and minimal liveness require authentication. Prefix with `/api/v1`. Resource lookups include owner constraints; use 404 for resources not visible to the caller.
+Auth endpoints and liveness are implemented; other routes below remain planned. Prefix with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected HTTP endpoints use `Authorization: Bearer <access_token>`. Resource lookups include owner constraints; use 404 for resources not visible to the caller. See [authentication](authentication.md) for exact implemented payloads and errors.
 
 | Method and path | Result |
 | --- | --- |
-| `POST /auth/register` | Create email/password account |
-| `POST /auth/login` | Set rotated HttpOnly session cookie |
-| `POST /auth/logout` | Revoke session, clear cookie, close its terminals |
+| `POST /auth/register` | Create email/password account and return access/refresh tokens (201) |
+| `POST /auth/login` | Verify credentials and return a new session's token pair (200) |
+| `POST /auth/refresh_token` | Consume refresh token and return rotated pair (200); replay revokes session |
+| `POST /auth/logout` | Revoke authenticated session and all its tokens (204); terminal cleanup remains planned |
 | `GET /auth/me` | Return minimal current user |
 | `GET /catalog/images` | Approved images, tags, settings schemas, capabilities |
 | `POST /generations` | Validate builder input and queue a bounded generation attempt |
@@ -48,6 +50,6 @@ All endpoints except registration/login and minimal liveness require authenticat
 Exact payload schemas and error envelopes belong in `packages/contracts` during implementation. Generation input never contains plaintext secrets: secret values are submitted through a protected API boundary, stored encrypted, and referenced by opaque ID. The server revalidates proposals on save and on start. Long operations return IDs for polling; request cancellation does not imply a Docker operation was canceled.
 
 ## Terminal protocol
-Upgrade at an owned terminal-session endpoint using the session cookie, a one-use ticket transmitted without URL query logging, and an Origin check. Tickets are short-lived, bound to the user, web session, service, and deployment, and consumed atomically. Do not put reusable bearer credentials in URLs.
+Planned: authorize terminal creation over bearer-authenticated HTTP, then upgrade using a one-use ticket transmitted without URL query logging and an Origin check. Tickets are short-lived, bound to the user, token session, service, and deployment, and consumed atomically. Browser WebSockets cannot set arbitrary Authorization headers; design that handshake during milestone 6. Do not put reusable bearer credentials in URLs.
 
 Client messages: `input` with bounded text, `resize` with validated rows/columns, `disconnect`. Server messages: `ready`, `output`, `exit`, `error`. Establish a TTY-backed Docker exec session using a fixed supported shell selected from the catalog. Apply backpressure, frame limits, idle/max lifetime limits, periodic authorization checks, and connection quotas. Close on logout, session expiry, ownership loss, service stop, or runner disconnect. Disconnect must clean up the exec transport/process without stopping the service's main process; verify shell termination behavior with integration tests.
