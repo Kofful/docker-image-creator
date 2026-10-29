@@ -1,0 +1,51 @@
+# JetBrains
+.idea/
+*.iml
+
+# Dependencies and local pnpm store
+node_modules/
+.pnpm-store/
+
+# NestJS, Vue/Vite, and shared TypeScript build output
+dist/
+build/
+.vite/
+.cache/
+*.tsbuildinfo
+
+# Test coverage and browser test artifacts
+coverage/
+.nyc_output/
+playwright-report/
+playwright/.cache/
+test-results/
+
+# Logs and process files
+logs/
+*.log
+*.pid
+*.pid.lock
+
+# Local environment and secrets; keep secret-free examples trackable
+*.env
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Generated Prisma clients; keep schemas and migrations trackable
+**/prisma/generated/
+**/generated/prisma/
+
+# Local runner artifacts, infrastructure data, and materialized secrets
+/.runtime/
+/infra/data/
+/infra/volumes/
+/infra/secrets/
+
+# Operating system files and editor temporary files
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
