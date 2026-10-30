@@ -4,6 +4,8 @@ Status: Vue/Nest source and three-service infrastructure Compose setup are prese
 
 ## Document map
 
+For automatic UI/API reloads in Docker, use the [development setup](local-setup.md#develop-in-docker-with-automatic-reload).
+
 | Document                                            | Purpose                                                              |
 | --------------------------------------------------- | -------------------------------------------------------------------- |
 | [Product requirements](product-requirements.md)     | Scope, screens, workflows, and acceptance criteria                   |

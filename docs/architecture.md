@@ -14,6 +14,14 @@ The API image additionally includes OpenSSL for Prisma migration tooling, the sc
 
 The pnpm workspace uses pinned direct package versions and a resolved `pnpm-lock.yaml`. Both Dockerfiles install with `--frozen-lockfile`. Container boot remains a separate verification gate. See [local setup](local-setup.md).
 
+### Docker development
+
+The optional `infra/docker-compose.dev.yml` override runs API and web from the shared `infra/Dockerfile.dev` image as the unprivileged `node` user. Dependency manifests are copied before source to cache installation. Mounts expose only application source, shared contracts, and selected non-secret configuration. Frontend/contracts/config mounts are read-only; API source is writable so Docker can create the empty generated-directory mountpoint on a clean checkout. Generated Prisma files use an anonymous Docker volume over that subtree. Host dependencies and private environment files are never mounted. Docker's init process forwards signals and reaps child processes.
+
+Vite listens on internal port 5173 and replaces Nginx in this mode, preserving the configured loopback `WEB_PORT` through a [Compose port override](https://docs.docker.com/reference/compose-file/merge/#replace-value) (Compose >= 2.24.4). Its server-side proxy uses `API_PROXY_TARGET=http://api:3000`; browser requests and API origin checks remain unchanged. Local Vite defaults to `http://127.0.0.1:3000`. Vite still disables environment-file loading. `DEV_WATCH_POLLING=true` enables polling in both watchers for hosts without reliable mount events.
+
+API development uses TypeScript's watch compiler and the existing strict/decorator-metadata settings. After each successful complete compilation, a small process supervisor terminates the previous Nest process, waits for shutdown (forcing it after five seconds), and starts the new compiled entry point. Invalid edits leave the last valid server running. SIGINT/SIGTERM close the watcher and child server. Startup deploys committed Prisma migrations and regenerates the client; schema/migration changes require an API restart. Dependency changes require rebuilding the development image; environment changes require recreating containers. The original single-file production deployment remains available, and both modes retain the same project-scoped database volume. See [local setup](local-setup.md) for switching commands and the disposable live-reload check.
+
 ## Target stack
 
 - Backend: NestJS with strict TypeScript, validation, REST endpoints, and an authenticated terminal gateway.

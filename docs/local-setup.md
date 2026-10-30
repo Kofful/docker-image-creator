@@ -8,7 +8,7 @@ Milestone 1's verification gates remain incomplete. Backend and browser portions
 
 ## Start the three services
 
-Install Docker Engine and Docker Compose v2. Commands below run from the repository root. Compose v2.29.1 is available in the implementation environment; container execution was not available for verification.
+Install Docker Engine and Docker Compose v2. Commands below run from the repository root. The development override requires Compose 2.24.4 or later; Compose v2.29.1 is available in the implementation environment.
 
 As a human operator, create or update `.env` in the repository root using the keys in `.env.example`. Set distinct, nonempty `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` values. Set `DATABASE_URL` to the application account at `mysql:3306`, URL-encoding username/password components and matching the database/account initialization settings. Set `AUTH_ACCESS_TOKEN_SECRET` to a private random signing key containing at least 32 bytes. Set `AUTH_TRUSTED_ORIGINS` to the exact browser origin, including the port; adjust it if `WEB_PORT` changes. The root `.env` is ignored by Git. If it already exists, preserve its other settings. Then start the services:
 
@@ -33,22 +33,74 @@ docker compose --env-file .env -f infra/docker-compose.yml down
 
 Use the same passwords when restarting an existing volume: the image's initialization variables do not change existing database accounts. Volume deletion is intentionally excluded from routine setup commands. MySQL is application infrastructure and must never join networks belonging to future generated user stacks.
 
+## Develop in Docker with automatic reload
+
+Use this mode for UI and API implementation work. It keeps the existing MySQL volume and browser address, including your configured `WEB_PORT`. With the existing root `.env` configured as above, run once:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up --build -d --wait
+```
+
+Keep using the same browser address. The default is <http://127.0.0.1:8080>; the example template sets `WEB_PORT=80`, which uses <http://127.0.0.1>. `AUTH_TRUSTED_ORIGINS` must match that address exactly. You do not need to add port 5173 for Docker development: it is the internal Vite port, mapped to your existing web port.
+
+Vue, CSS, and frontend TypeScript edits hot-reload in the browser. API TypeScript edits compile and restart Nest automatically after a successful build. A type error leaves the last valid API running; fix the error to resume reloads. Both services also see shared contracts source changes. No source edit requires a container rebuild or a Compose command.
+
+Follow compiler/server output with:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.dev.yml logs -f web api
+```
+
+Frontend, contracts, and configuration mounts are read-only. API source is writable so Docker can create its generated-directory mountpoint on a clean checkout; the generated Prisma client itself uses a separate Docker volume. Dependencies stay inside the image. API and MySQL stay private; Vite proxies `/api/` to `api:3000`. No repository root or private environment file is mounted into a container.
+
+| Change                                        | Action                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------- |
+| UI, API, or shared contract source            | Save the file; reload is automatic                                     |
+| Dependency manifests, lockfile, or Dockerfile | Repeat the development `up --build` command                            |
+| Environment configuration                     | Repeat development `up -d --force-recreate` without `--build`          |
+| Prisma schema or committed migrations         | Restart the API; startup deploys migrations and regenerates the client |
+| Watcher script                                | Restart the API                                                        |
+
+For example, after adding a committed migration:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.dev.yml restart api
+```
+
+If file changes are not detected on Docker Desktop or WSL, set `DEV_WATCH_POLLING=true` in your configuration and recreate the development containers. Polling uses more CPU. The default uses native filesystem events.
+
+To stop development while preserving database data:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.dev.yml down
+```
+
+To return to compiled production containers, use the original single-file `up --build` command above. Both modes use the same Compose project and database volume when run from this repository; do not add a different project name when switching modes.
+
+An opt-in smoke check builds the dev image, boots a unique disposable Compose project with test-only settings, verifies Vue HMR and API reload/error recovery, checks authentication origin protection, and removes only its own containers, network, and volumes. It edits temporary source copies, uses a random loopback port, and never loads repository environment files:
+
+```bash
+corepack pnpm test:dev
+```
+
 ## Environment reference
 
 The root `.env.example` is the canonical secret-free template for `.env`; real passwords and signing keys belong only in the private deployment configuration. Start/stop commands explicitly select the root file with `--env-file .env`, since the Compose file lives under `infra`. Compose interpolates the referenced variables and passes the MySQL settings through the service's `environment` mapping. Shell variables override values from the file; unset previously exported values when you want the file's settings to apply. See [Docker's interpolation documentation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/).
 
 Agents must not access the real `.env`. Agent checks use explicit secret-free configuration instead. Do not print fully resolved Compose configuration with real credentials; use `config --quiet` for validation.
 
-| Variable                   | Required/default                                                     | Purpose                                                                                                  |
-| -------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `MYSQL_DATABASE`           | `docker_image_creator`                                               | Database created on first initialization                                                                 |
-| `MYSQL_USER`               | `docker_image_creator`                                               | Application account created on first initialization                                                      |
-| `MYSQL_PASSWORD`           | Required, nonempty                                                   | Initializes the MySQL application account                                                                |
-| `MYSQL_ROOT_PASSWORD`      | Required, nonempty                                                   | Initializes the separate MySQL root account                                                              |
-| `WEB_PORT`                 | `8080`                                                               | Host web port, published only on `127.0.0.1`                                                             |
-| `DATABASE_URL`             | Required                                                             | `mysql://<encoded-user>:<encoded-password>@mysql:3306/<database>` in Compose; no query options/fragments |
-| `AUTH_ACCESS_TOKEN_SECRET` | Required, at least 32 bytes                                          | Private random HS256 signing key; changing it invalidates access tokens                                  |
-| `AUTH_TRUSTED_ORIGINS`     | Required for source startup; Compose default `http://127.0.0.1:8080` | Comma-separated exact HTTP(S) origins, with no trailing slash; add `http://127.0.0.1:5173` for Vite      |
+| Variable                   | Required/default                                                         | Purpose                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `MYSQL_DATABASE`           | `docker_image_creator`                                                   | Database created on first initialization                                                                 |
+| `MYSQL_USER`               | `docker_image_creator`                                                   | Application account created on first initialization                                                      |
+| `MYSQL_PASSWORD`           | Required, nonempty                                                       | Initializes the MySQL application account                                                                |
+| `MYSQL_ROOT_PASSWORD`      | Required, nonempty                                                       | Initializes the separate MySQL root account                                                              |
+| `WEB_PORT`                 | `8080`                                                                   | Host web port, published only on `127.0.0.1`                                                             |
+| `DATABASE_URL`             | Required                                                                 | `mysql://<encoded-user>:<encoded-password>@mysql:3306/<database>` in Compose; no query options/fragments |
+| `AUTH_ACCESS_TOKEN_SECRET` | Required, at least 32 bytes                                              | Private random HS256 signing key; changing it invalidates access tokens                                  |
+| `AUTH_TRUSTED_ORIGINS`     | Required for source startup; Compose default `http://127.0.0.1:8080`     | Comma-separated exact HTTP(S) origins, with no trailing slash; add `http://127.0.0.1:5173` for Vite      |
+| `DEV_WATCH_POLLING`        | `false`                                                                  | Use polling for API/Vite source watchers in Docker development if native events are unavailable          |
+| `API_PROXY_TARGET`         | `http://127.0.0.1:3000` locally; `http://api:3000` in Docker development | Server-side Vite proxy target; not exposed as a browser variable                                         |
 
 MySQL port 3306 and API port 3000 are accessible only within the infrastructure network. The API consumes application database credentials; it never needs the MySQL root password. Prisma CLI and API runtime read process environment only and do not load environment files. No LLM credentials are needed. The auth variables listed above are documented in the root `.env.example`.
 
@@ -74,13 +126,15 @@ For local source development, explicitly export `DATABASE_URL`, `AUTH_ACCESS_TOK
 ```bash
 corepack pnpm --filter @docker-image-creator/api db:migrate
 corepack pnpm build
-corepack pnpm --filter @docker-image-creator/api start
+corepack pnpm --filter @docker-image-creator/api dev
 corepack pnpm --filter @docker-image-creator/web dev
 ```
 
 Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. API startup now requires MySQL and the auth settings, even if only liveness is used. Keep `http://127.0.0.1:5173` in trusted origins when using Vite.
 
 ## Verification record and remaining prerequisites
+
+The Docker development image built successfully with the frozen lockfile. The disposable `test:dev` harness passed with native watching and with `DEV_WATCH_POLLING=true`: three-service boot, migrations, Vite API proxy, Vue HMR and changed served content, API recompile/restart, continued service during a type error and recovery after correction, trusted/untrusted registration origins, unchanged container IDs, and graceful API watcher shutdown. Tests used unique project-scoped resources and temporary source copies; cleanup removed their containers, network, and volumes. The application stack and protected environment files were not accessed. API/contracts/web type checks, workspace ESLint plus the smoke script, changed-file formatting, and all 28 frontend tests also passed for this change. This verifies the development deployment; production image boot and runner scaffolding remain separate gates.
 
 Compose configuration was validated without starting containers, using explicit non-secret test values:
 

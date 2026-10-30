@@ -6,6 +6,7 @@
     "build": "pnpm prisma:generate && tsc -p tsconfig.json",
     "typecheck": "pnpm prisma:generate && tsc --noEmit -p tsconfig.test.json",
     "start": "node dist/main.js",
+    "dev": "pnpm prisma:generate && node scripts/dev.mjs",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",

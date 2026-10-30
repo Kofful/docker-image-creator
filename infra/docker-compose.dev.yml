@@ -1,0 +1,68 @@
+# Combine with docker-compose.yml; paths are relative to that base file.
+# Requires Compose >= 2.24.4 for !override.
+services:
+  web:
+    image: docker-image-creator-dev:local
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.dev
+    init: true
+    command:
+      [
+        "pnpm",
+        "--filter",
+        "@docker-image-creator/web",
+        "dev",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5173",
+        "--strictPort",
+      ]
+    ports: !override
+      - "127.0.0.1:${WEB_PORT:-8080}:5173"
+    environment:
+      API_PROXY_TARGET: http://api:3000
+      DEV_WATCH_POLLING: ${DEV_WATCH_POLLING:-false}
+    volumes:
+      - ../apps/web/src:/app/apps/web/src:ro
+      - ../apps/web/index.html:/app/apps/web/index.html:ro
+      - ../apps/web/vite.config.ts:/app/apps/web/vite.config.ts:ro
+      - ../apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
+      - ../packages/contracts/src:/app/packages/contracts/src:ro
+      - ../tsconfig.base.json:/app/tsconfig.base.json:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+
+  api:
+    image: docker-image-creator-dev:local
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.dev
+    init: true
+    command:
+      [
+        "sh",
+        "-c",
+        "pnpm --filter @docker-image-creator/api db:migrate && exec pnpm --filter @docker-image-creator/api dev",
+      ]
+    environment:
+      NODE_ENV: development
+      DEV_WATCH_POLLING: ${DEV_WATCH_POLLING:-false}
+    volumes:
+      # Docker needs a writable parent to create the generated volume mountpoint.
+      - ../apps/api/src:/app/apps/api/src
+      # Generated Prisma files stay in Docker; only the empty mountpoint is on host.
+      - /app/apps/api/src/generated
+      - ../apps/api/scripts/dev.mjs:/app/apps/api/scripts/dev.mjs:ro
+      - ../apps/api/prisma:/app/apps/api/prisma:ro
+      - ../apps/api/prisma.config.ts:/app/apps/api/prisma.config.ts:ro
+      - ../apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
+      - ../packages/contracts/src:/app/packages/contracts/src:ro
+      - ../tsconfig.base.json:/app/tsconfig.base.json:ro

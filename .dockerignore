@@ -10,6 +10,7 @@
 !apps/**/tsconfig.json
 !apps/**/Dockerfile
 !apps/api/prisma.config.ts
+!apps/api/scripts/dev.mjs
 !apps/api/prisma/
 !apps/api/prisma/**
 !apps/web/index.html

@@ -12,6 +12,7 @@
     "test": "pnpm test:web && pnpm test:api",
     "test:web": "pnpm --filter @docker-image-creator/web test",
     "test:api": "pnpm --filter @docker-image-creator/api test",
+    "test:dev": "node infra/scripts/test-dev.mjs",
     "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs",
     "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs"
   },

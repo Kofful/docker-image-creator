@@ -5,6 +5,10 @@ default_permissions = "project-env-protected"
   [mcp_servers.phpstorm]
     url = "http://127.0.0.1:64442/stream"
 
+  [mcp_servers.playwright]
+    command = "npx"
+    args = ["@playwright/mcp@latest"]
+
 
 [permissions.project-env-protected]
 extends = ":workspace"
