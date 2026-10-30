@@ -2,9 +2,9 @@
 
 ## Current behavior
 
-The stack contains Vue frontend source in `apps/web`, Nest backend source in `apps/api`, shared transport types in `packages/contracts`, and infrastructure configuration in `infra/docker-compose.yml`. Prisma schema and committed MySQL migrations now create users, sessions, and refresh tokens. The [auth API](authentication.md) implements registration/login/refresh_token/me/logout. The health endpoint reports liveness only, and the web page still displays the API connection status.
+The stack contains Vue frontend source in `apps/web`, Nest backend source in `apps/api`, shared transport types in `packages/contracts`, and infrastructure configuration in `infra/docker-compose.yml`. Prisma schema and committed MySQL migrations now create users, sessions, and refresh tokens. The [auth API](authentication.md) implements registration/login/refresh_token/me/logout. The web UI provides login, registration, a protected account page, and logout. The health endpoint reports liveness only.
 
-Milestone 1's verification gates remain incomplete. The backend portion of milestone 2 is implemented in source, with endpoint execution still unverified. Browser auth pages, generation, stack execution, and terminals remain planned.
+Milestone 1's verification gates remain incomplete. Backend and browser portions of milestone 2 are implemented in source; see the verification record below. Generation, stack execution, and terminals remain planned.
 
 ## Start the three services
 
@@ -16,7 +16,7 @@ As a human operator, create or update `.env` in the repository root using the ke
 docker compose --env-file .env -f infra/docker-compose.yml up --build -d --wait
 ```
 
-Open <http://127.0.0.1:8080>. The page should say “API is online”. Check the proxied endpoint:
+Open <http://127.0.0.1:8080>. The page redirects to login. Create an account to open the protected account page, then use Log out to revoke that session. Refreshing the page requires login again because credentials stay in memory. Check the proxied health endpoint separately:
 
 ```bash
 curl --fail http://127.0.0.1:8080/api/v1/health
@@ -39,16 +39,16 @@ The root `.env.example` is the canonical secret-free template for `.env`; real p
 
 Agents must not access the real `.env`. Agent checks use explicit secret-free configuration instead. Do not print fully resolved Compose configuration with real credentials; use `config --quiet` for validation.
 
-| Variable | Required/default | Purpose |
-| --- | --- | --- |
-| `MYSQL_DATABASE` | `docker_image_creator` | Database created on first initialization |
-| `MYSQL_USER` | `docker_image_creator` | Application account created on first initialization |
-| `MYSQL_PASSWORD` | Required, nonempty | Initializes the MySQL application account |
-| `MYSQL_ROOT_PASSWORD` | Required, nonempty | Initializes the separate MySQL root account |
-| `WEB_PORT` | `8080` | Host web port, published only on `127.0.0.1` |
-| `DATABASE_URL` | Required | `mysql://<encoded-user>:<encoded-password>@mysql:3306/<database>` in Compose; no query options/fragments |
-| `AUTH_ACCESS_TOKEN_SECRET` | Required, at least 32 bytes | Private random HS256 signing key; changing it invalidates access tokens |
-| `AUTH_TRUSTED_ORIGINS` | Required for source startup; Compose default `http://127.0.0.1:8080` | Comma-separated exact HTTP(S) origins, with no trailing slash; add `http://127.0.0.1:5173` for Vite |
+| Variable                   | Required/default                                                     | Purpose                                                                                                  |
+| -------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `MYSQL_DATABASE`           | `docker_image_creator`                                               | Database created on first initialization                                                                 |
+| `MYSQL_USER`               | `docker_image_creator`                                               | Application account created on first initialization                                                      |
+| `MYSQL_PASSWORD`           | Required, nonempty                                                   | Initializes the MySQL application account                                                                |
+| `MYSQL_ROOT_PASSWORD`      | Required, nonempty                                                   | Initializes the separate MySQL root account                                                              |
+| `WEB_PORT`                 | `8080`                                                               | Host web port, published only on `127.0.0.1`                                                             |
+| `DATABASE_URL`             | Required                                                             | `mysql://<encoded-user>:<encoded-password>@mysql:3306/<database>` in Compose; no query options/fragments |
+| `AUTH_ACCESS_TOKEN_SECRET` | Required, at least 32 bytes                                          | Private random HS256 signing key; changing it invalidates access tokens                                  |
+| `AUTH_TRUSTED_ORIGINS`     | Required for source startup; Compose default `http://127.0.0.1:8080` | Comma-separated exact HTTP(S) origins, with no trailing slash; add `http://127.0.0.1:5173` for Vite      |
 
 MySQL port 3306 and API port 3000 are accessible only within the infrastructure network. The API consumes application database credentials; it never needs the MySQL root password. Prisma CLI and API runtime read process environment only and do not load environment files. No LLM credentials are needed. The auth variables listed above are documented in the root `.env.example`.
 
@@ -63,10 +63,11 @@ corepack pnpm typecheck
 corepack pnpm build
 corepack pnpm format:check
 corepack pnpm --filter @docker-image-creator/api prisma:validate
-corepack pnpm test
+corepack pnpm test:web
+corepack pnpm test:api
 ```
 
-The first successful install must produce `pnpm-lock.yaml`; review and commit it, change both Dockerfiles to `pnpm install --frozen-lockfile`, and verify a fresh frozen install before marking milestone 1 complete. Current Dockerfiles use bootstrap installs without a frozen lockfile, so transitive dependencies are not yet reproducible. ESLint now checks API/contracts TypeScript and the auth test harness; frontend lint configuration remains outside this backend slice. API build/typecheck scripts generate the Prisma client first. The MySQL endpoint suite requires Docker and creates its own disposable database with generated test-only credentials; it does not load any environment file.
+The workspace now has a resolved `pnpm-lock.yaml`; both Dockerfiles use `pnpm install --frozen-lockfile`. ESLint checks API/contracts TypeScript, Vue components, frontend TypeScript, and the auth test harness. API build/typecheck scripts generate the Prisma client first. The MySQL endpoint suite requires Docker and creates its own disposable database with generated test-only credentials; it does not load any environment file.
 
 For local source development, explicitly export `DATABASE_URL`, `AUTH_ACCESS_TOKEN_SECRET`, and `AUTH_TRUSTED_ORIGINS` in your shell without committing or printing credentials. Use a reachable development MySQL server: the Compose database has no host port. After installing dependencies, deploy migrations and build, then run API and web in separate terminals:
 
@@ -96,4 +97,10 @@ For the auth change, shared-contract checking passed with the cached TypeScript 
 
 The migration SQL also executed successfully during fresh, isolated MySQL 8.0.42 initialization using `mysqld --no-defaults --initialize-insecure --init-file=<temporary SQL> --datadir=<fresh /tmp directory> --secure-file-priv=NULL`. The temporary SQL selected a disposable database and contained the committed migration unchanged; all three table files were created, with no SQL errors. No existing databases were accessed, and no listening server was left running. This checks MySQL DDL execution, not Prisma deployment, transaction behavior, or HTTP integration against the target MySQL 8.4.11 image.
 
-`npm run lint`, `npm run format:check`, `npm run typecheck`, `npm run build`, and the API's `npm test` were attempted but could not start their tools: ESLint/Prettier/pnpm are not installed. Downloading pinned pnpm and resolving Prisma failed with `EAI_AGAIN`, including elevated retries. Workspace dependencies and a lockfile therefore remain unavailable. Direct execution of the auth harness also failed because Docker daemon access was denied, including after elevation. A temporary MySQL server could initialize but could not bind a Unix socket (`Operation not permitted`), so it could not replace Docker for HTTP integration. Formatting, ESLint, full application type checking/builds, Prisma validation/deployment, and endpoint tests have not passed verification. They remain explicit prerequisites; no mocked database results are reported as integration success.
+Earlier backend-only checks could not install dependencies or reach Docker. During the authentication UI change, approved network and Docker retries succeeded: pinned pnpm installed the workspace and generated `pnpm-lock.yaml`, a frozen offline install passed, workspace type checks and Prisma validation passed, all 28 frontend tests passed, and all 24 API endpoint tests passed against disposable MySQL 8.4.11. The API suite applied the committed migration twice and removed its test container and volumes. No protected environment files were accessed.
+
+Workspace ESLint passed with zero warnings, and all workspace builds passed. The repository-wide `format:check` reports pre-existing formatting issues in 21 untouched files (workspace YAML, API/contracts source, and planning docs). Formatting checks for all changed supported files pass; the pnpm-generated lockfile is excluded from Prettier. Full three-service image builds/boot and runner scaffolding remain unverified/incomplete.
+
+The frontend suite (`corepack pnpm test:web`) uses Vitest/jsdom and mocked HTTP responses with the actual Vue views, router, and Pinia/session client. It needs no Docker, MySQL, credentials, or environment files. `corepack pnpm test` runs frontend checks first, followed by the disposable-MySQL endpoint suite.
+
+The pinned pnpm binary was downloaded with `npm exec --cache /tmp/docker-image-creator-npm-cache --yes --package=pnpm@10.34.9 -- pnpm --version`. Checks used that binary with its containing `node_modules/.bin` directory on `PATH`; the `corepack pnpm` commands above are the equivalent normal setup.

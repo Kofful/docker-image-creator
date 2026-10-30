@@ -5,8 +5,7 @@ FROM base AS build
 WORKDIR /app
 RUN npm install --global pnpm@10.34.9
 COPY . .
-# Bootstrap only: switch to --frozen-lockfile once registry access can generate the lockfile.
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @docker-image-creator/api... build
 
 FROM base AS runtime

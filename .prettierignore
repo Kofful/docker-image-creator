@@ -2,6 +2,7 @@
 **/dist/
 **/dist-test/
 **/generated/
+pnpm-lock.yaml
 *.env
 .env
 .env.*

@@ -1,0 +1,170 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #183044;
+  background: #f3f6f8;
+  font-synthesis: none;
+  line-height: 1.6;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+a {
+  color: #126179;
+  text-underline-offset: 0.2em;
+}
+button,
+input {
+  font: inherit;
+}
+button,
+a,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+:focus-visible {
+  outline: 3px solid #197a94;
+  outline-offset: 3px;
+}
+h1:focus {
+  outline: none;
+}
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.5rem clamp(1rem, 5vw, 4rem);
+  border-bottom: 1px solid #dbe3e8;
+  background: white;
+}
+.brand {
+  color: #183044;
+  font-weight: 750;
+  text-decoration: none;
+}
+.milestone,
+.field-help,
+.session-note {
+  color: #526674;
+  font-size: 0.875rem;
+}
+main {
+  width: 100%;
+  padding: clamp(1.5rem, 6vw, 4rem) 1rem;
+  flex: 1;
+}
+.auth-card {
+  max-width: 30rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 5vw, 2.5rem);
+  border: 1px solid #dbe3e8;
+  border-radius: 1rem;
+  background: white;
+  box-shadow: 0 12px 40px #18304408;
+}
+.eyebrow {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 750;
+  color: #126179;
+  margin: 0 0 0.5rem;
+}
+h1 {
+  font-size: 1.9rem;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+.intro {
+  margin: 1rem 0 1.5rem;
+  overflow-wrap: anywhere;
+}
+fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 650;
+  margin: 1rem 0 0.4rem;
+}
+input {
+  width: 100%;
+  min-height: 2.9rem;
+  border: 1px solid #a9bbc7;
+  border-radius: 0.4rem;
+  padding: 0.65rem 0.8rem;
+  color: #183044;
+  background: white;
+}
+.field-help {
+  margin: 0.5rem 0;
+}
+button {
+  width: 100%;
+  min-height: 2.9rem;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  background: #126179;
+  color: white;
+  padding: 0.65rem 1rem;
+  font-weight: 650;
+  cursor: pointer;
+  margin-top: 1rem;
+}
+button:hover {
+  background: #0e4b5e;
+}
+button:disabled,
+fieldset:disabled button {
+  opacity: 0.65;
+  cursor: wait;
+}
+.secondary {
+  background: white;
+  color: #183044;
+  border-color: #a9bbc7;
+}
+.secondary:hover {
+  background: #edf3f6;
+}
+.error {
+  background: #fff0f0;
+  color: #972f35;
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+}
+.notice {
+  background: #edf5f8;
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+.notice p {
+  margin-bottom: 0;
+}
+.alternate {
+  text-align: center;
+  font-size: 0.9rem;
+}
+.session-note {
+  border-top: 1px solid #dbe3e8;
+  padding-top: 1rem;
+  margin-bottom: 0;
+}

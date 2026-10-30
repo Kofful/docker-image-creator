@@ -1,41 +1,28 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import type { HealthResponse } from '@docker-image-creator/contracts';
+import { watch } from "vue";
+import { RouterLink, RouterView, useRouter } from "vue-router";
+import { useAuthStore } from "./auth/store";
 
-const status = ref('Checking API connection…');
-
-onMounted(async () => {
-  try {
-    const response = await fetch('/api/v1/health', {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) throw new Error('Health request failed');
-    const health: HealthResponse = await response.json();
-    if (health.status !== 'ok' || health.service !== 'api') {
-      throw new Error('Unexpected health response');
+const auth = useAuthStore();
+const router = useRouter();
+watch(
+  () => auth.hasSession,
+  (active) => {
+    if (!active && router.currentRoute.value.meta.requiresAuth) {
+      void router.replace({ path: "/login", query: { session: "ended" } });
     }
-    status.value = 'API is online';
-  } catch {
-    status.value = 'API is unavailable. Please try refreshing the page.';
-  }
-});
+  },
+);
 </script>
 
 <template>
-  <main>
-    <h1>Docker Image Creator</h1>
-    <p role="status">{{ status }}</p>
-    <p>Account management and stack creation are coming in later milestones.</p>
-  </main>
+  <div class="app-shell">
+    <header class="site-header">
+      <RouterLink class="brand" to="/">Docker Image Creator</RouterLink>
+      <span class="milestone">Local workspace</span>
+    </header>
+    <main id="main-content">
+      <RouterView :key="$route.path" />
+    </main>
+  </div>
 </template>
-
-<style scoped>
-main {
-  max-width: 48rem;
-  margin: 5rem auto;
-  padding: 2rem;
-  font-family: system-ui, sans-serif;
-  line-height: 1.6;
-  color: #183044;
-}
-</style>

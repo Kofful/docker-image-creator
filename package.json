@@ -2,12 +2,16 @@
   "name": "docker-image-creator",
   "private": true,
   "packageManager": "pnpm@10.34.9",
-  "engines": { "node": ">=22.23.4 <23" },
+  "engines": {
+    "node": ">=22.23.4 <23"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint apps/api packages/contracts",
-    "test": "pnpm --filter @docker-image-creator/api test",
+    "lint": "eslint apps packages/contracts",
+    "test": "pnpm test:web && pnpm test:api",
+    "test:web": "pnpm --filter @docker-image-creator/web test",
+    "test:api": "pnpm --filter @docker-image-creator/api test",
     "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs",
     "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs"
   },
@@ -15,6 +19,7 @@
     "@eslint/js": "9.39.1",
     "@types/node": "22.9.0",
     "eslint": "9.39.1",
+    "eslint-plugin-vue": "10.7.0",
     "prettier": "3.6.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.48.0"
