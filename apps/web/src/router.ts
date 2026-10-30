@@ -3,6 +3,9 @@ import type { Pinia } from "pinia";
 import { useAuthStore } from "./auth/store";
 import AuthPage from "./views/AuthPage.vue";
 import AccountPage from "./views/AccountPage.vue";
+import ConfigsPage from "./views/ConfigsPage.vue";
+import NewConfigPage from "./views/NewConfigPage.vue";
+import ConfigPage from "./views/ConfigPage.vue";
 
 export function createAppRouter(
   pinia: Pinia,
@@ -30,6 +33,21 @@ export function createAppRouter(
         meta: { requiresAuth: true },
       },
       { path: "/:pathMatch(.*)*", redirect: "/account" },
+      {
+        path: "/configs",
+        component: ConfigsPage,
+        meta: { requiresAuth: true },
+      },
+      {
+        path: "/configs/new",
+        component: NewConfigPage,
+        meta: { requiresAuth: true },
+      },
+      {
+        path: "/configs/:id",
+        component: ConfigPage,
+        meta: { requiresAuth: true },
+      },
     ],
   });
   router.beforeEach((to) => {
@@ -38,7 +56,7 @@ export function createAppRouter(
     if (to.meta.guest && auth.hasSession) return "/account";
   });
   router.afterEach((to) => {
-    document.title = `${to.path === "/register" ? "Create account" : to.path === "/login" ? "Log in" : "Account"} · Docker Image Creator`;
+    document.title = `${to.path.startsWith("/configs") ? "Configurations" : to.path === "/register" ? "Create account" : to.path === "/login" ? "Log in" : "Account"} · Docker Image Creator`;
   });
   return router;
 }

@@ -16,13 +16,40 @@ a {
   text-underline-offset: 0.2em;
 }
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 button,
 a,
 input {
   -webkit-tap-highlight-color: transparent;
+}
+.config-card {
+  max-width: 54rem;
+}
+.config-card select,
+.config-card textarea {
+  width: 100%;
+  padding: 0.65rem;
+  border: 1px solid #a9bbc7;
+  border-radius: 0.4rem;
+  background: white;
+}
+.config-card textarea {
+  min-height: 6rem;
+}
+.config-card pre {
+  overflow: auto;
+  max-height: 35rem;
+  background: #f3f6f8;
+  padding: 1rem;
+  font-size: 0.85rem;
+}
+.service-fields {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #dbe3e8;
 }
 :focus-visible {
   outline: 3px solid #197a94;

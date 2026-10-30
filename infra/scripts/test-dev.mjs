@@ -22,6 +22,7 @@ const env = {
   MYSQL_USER: "dev_test",
   WEB_PORT: "0",
   AUTH_ACCESS_TOKEN_SECRET: randomBytes(48).toString("hex"),
+  CONFIG_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
   AUTH_TRUSTED_ORIGINS: "http://127.0.0.1:8080",
   DEV_WATCH_POLLING: process.env.DEV_WATCH_POLLING ?? "false",
 };
@@ -36,6 +37,7 @@ function redact(value) {
     env.MYSQL_PASSWORD,
     env.MYSQL_ROOT_PASSWORD,
     env.AUTH_ACCESS_TOKEN_SECRET,
+    env.CONFIG_ENCRYPTION_KEY,
   ]) {
     output = output.replaceAll(secret, "<REDACTED>");
   }

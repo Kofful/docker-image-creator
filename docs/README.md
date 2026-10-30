@@ -1,26 +1,31 @@
 # Docker Image Creator
 
-Status: Vue/Nest source and three-service infrastructure Compose setup are present. The API includes email/password registration, login, rotating refresh tokens, current user, logout, Prisma migrations, and a disposable-MySQL endpoint test suite. The Vue UI now provides login/registration, a protected account page, memory-only session handling, and logout, with frontend tests. Generation, the runner, and terminals remain planned. See [local setup](local-setup.md) for verification results and prerequisites.
+Status: Vue/Nest and three-service infrastructure Compose are present, with email/password authentication and MySQL sessions. Configuration creation now queues durable background generation, saves an immutable DB revision and private Compose file, and exposes owner-scoped polling. Vue provides creation/list/detail pages that can wait for multi-minute generation and resume status checks. The provider is a deterministic fake; live LLM integration, Docker runtime validation, the runner, and terminals remain planned. See [configuration API](configuration-api.md) and [local setup](local-setup.md) for exact behavior and verification.
 
 ## Document map
 
+The [configuration API](configuration-api.md) documents implemented creation, background generation, polling, persistence, and file storage.
+
 For automatic UI/API reloads in Docker, use the [development setup](local-setup.md#develop-in-docker-with-automatic-reload).
 
-| Document                                            | Purpose                                                              |
-| --------------------------------------------------- | -------------------------------------------------------------------- |
-| [Product requirements](product-requirements.md)     | Scope, screens, workflows, and acceptance criteria                   |
-| [Architecture](architecture.md)                     | Workspace, services, trust boundaries, and technology choices        |
-| [Data and API](data-and-api.md)                     | Persistence model, REST endpoints, and terminal protocol             |
-| [Authentication API](authentication.md)             | Token payloads, rotation/revocation, migration and test commands     |
-| [Generation and runtime](generation-and-runtime.md) | LLM contract, Compose policies, and lifecycle behavior               |
-| [Security](security.md)                             | Authentication, isolation, secrets, and execution controls           |
-| [Implementation plan](implementation-plan.md)       | Ordered milestones and verification gates                            |
-| [Skills](skills.md)                                 | Recommended coding skills and activation rules                       |
-| [Local setup](local-setup.md)                       | Build/start commands, environment reference, and verification limits |
+| Document                                            | Purpose                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------ |
+| [Product requirements](product-requirements.md)     | Scope, screens, workflows, and acceptance criteria                       |
+| [Architecture](architecture.md)                     | Workspace, services, trust boundaries, and technology choices            |
+| [Data and API](data-and-api.md)                     | Persistence model, REST endpoints, and terminal protocol                 |
+| [Authentication API](authentication.md)             | Token payloads, rotation/revocation, migration and test commands         |
+| [Generation and runtime](generation-and-runtime.md) | LLM contract, Compose policies, and lifecycle behavior                   |
+| [Compose-only options](compose-only-options.md)     | Public-image and single-document alternatives currently under discussion |
+| [Security](security.md)                             | Authentication, isolation, secrets, and execution controls               |
+| [Implementation plan](implementation-plan.md)       | Ordered milestones and verification gates                                |
+| [Skills](skills.md)                                 | Recommended coding skills and activation rules                           |
+| [Local setup](local-setup.md)                       | Build/start commands, environment reference, and verification limits     |
 
 ## Planning assumptions
 
-The first deployment is a local development tool on a dedicated Docker host for trusted users. A shared public execution service is outside the MVP. The UI uses English. One host, one running deployment per saved configuration, and one replica per service are sufficient initially. Registration is available without sending emails. Users start generated configurations explicitly after review.
+The accepted single-document, public-image design is recorded in [ADR 0002](adr/0002-compose-only-generation.md), superseding custom builds from [ADR 0001](adr/0001-generated-bundles-and-validation-runs.md). Compose generation/persistence and polling are implemented with a fake provider. Automatic start/readiness/observation/stop remains planned for the runner milestone, and real provider/model selection is deferred. Domain terms are recorded in the [glossary](../GLOSSARY.md).
+
+The first deployment is a local development tool on a dedicated Docker host for trusted users. A shared public execution service is outside the MVP. The UI uses English. One host, one running deployment per saved configuration, and one replica per service are sufficient initially. Registration is available without sending emails. The target workflow includes an automatic temporary validation trial followed by stop; this runtime phase is not implemented yet. Users explicitly start lasting deployments after review.
 
 The model provider and model remain undecided. The planned runtime will use a provider adapter, allowing a fake implementation for development before credentials exist. Initial dependency and image versions are pinned in the scaffold; the full compatibility and clean-install gates remain pending.
 

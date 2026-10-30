@@ -1,24 +1,34 @@
-import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
-import { PrismaMariaDb } from '@prisma/adapter-mariadb';
-import { PrismaClient } from '../generated/prisma/client';
+import {
+  Injectable,
+  type BeforeApplicationShutdown,
+  type OnModuleInit,
+} from "@nestjs/common";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
+import { PrismaClient } from "../generated/prisma/client";
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService
+  extends PrismaClient
+  implements OnModuleInit, BeforeApplicationShutdown
+{
   constructor() {
     const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) throw new Error('DATABASE_URL is required');
+    if (!databaseUrl) throw new Error("DATABASE_URL is required");
     let url: URL;
     try {
       url = new URL(databaseUrl);
     } catch {
-      throw new Error('DATABASE_URL must be a valid MySQL URL');
+      throw new Error("DATABASE_URL must be a valid MySQL URL");
     }
-    if (url.protocol !== 'mysql:') throw new Error('DATABASE_URL must use MySQL');
+    if (url.protocol !== "mysql:")
+      throw new Error("DATABASE_URL must use MySQL");
     if (url.search || url.hash) {
-      throw new Error('DATABASE_URL query options and fragments are not supported');
+      throw new Error(
+        "DATABASE_URL query options and fragments are not supported",
+      );
     }
     if (!url.hostname || !url.username || url.pathname.length < 2) {
-      throw new Error('DATABASE_URL must include a host, user, and database');
+      throw new Error("DATABASE_URL must include a host, user, and database");
     }
     super({
       adapter: new PrismaMariaDb({
@@ -30,7 +40,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         connectionLimit: 5,
         connectTimeout: 5000,
         acquireTimeout: 5000,
-        timezone: '+00:00',
+        timezone: "+00:00",
         // MySQL 8 caching_sha2_password on the private local infrastructure network.
         allowPublicKeyRetrieval: true,
         logParam: false,
@@ -42,7 +52,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     await this.$connect();
   }
 
-  async onModuleDestroy(): Promise<void> {
+  // Workers finish their onModuleDestroy bookkeeping before pools disconnect.
+  async beforeApplicationShutdown(): Promise<void> {
     await this.$disconnect();
   }
 }

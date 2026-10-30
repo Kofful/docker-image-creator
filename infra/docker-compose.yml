@@ -30,6 +30,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL with URL-encoded MySQL credentials}
       AUTH_ACCESS_TOKEN_SECRET: ${AUTH_ACCESS_TOKEN_SECRET:?Set AUTH_ACCESS_TOKEN_SECRET to at least 32 random bytes}
       AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://127.0.0.1:8080}
+      CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?Set CONFIG_ENCRYPTION_KEY to 32 random bytes encoded as 64 hexadecimal characters (openssl rand -hex 32)}
+      CONFIG_ARTIFACT_ROOT: /app/.runtime/configs
+      CONFIG_FAKE_DELAY_MS: ${CONFIG_FAKE_DELAY_MS:-0}
+    volumes:
+      - generated-configs:/app/.runtime/configs
     depends_on:
       mysql:
         condition: service_healthy
@@ -72,3 +77,4 @@ networks:
 
 volumes:
   mysql-data:
+  generated-configs:

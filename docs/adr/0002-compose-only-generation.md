@@ -1,0 +1,5 @@
+# Generate Compose from approved public images without custom builds
+
+The user chose a single generated Compose document using approved public images, fixed runnable Node/Python starters, and stock database services. This supersedes the Dockerfile/build-context and dependency-installation portions of [ADR 0001](0001-generated-bundles-and-validation-runs.md); custom image builds and auxiliary authored source files are deferred. Inline non-secret code/configuration is allowed, while Docker-managed data and private runtime secret material remain separate from generated project files.
+
+The requested implementation milestone is asynchronous configuration creation: save owned database records and a Compose file, return an action ID promptly, and let the frontend poll instead of holding a multi-minute HTTP request open. The generation deadline is now five minutes, replacing the earlier 60 seconds. A provider adapter and deterministic fake are implemented first as previously agreed; real provider selection and automatic Docker start/readiness/stop validation remain later milestones and must be reported as such.

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import { useAuthStore } from "../auth/store";
 import { authMessage } from "../auth/messages";
 
@@ -58,6 +58,10 @@ onMounted(() => {
     <template v-else-if="verified">
       <p class="intro">
         Signed in as <strong>{{ auth.user?.email }}</strong>
+      </p>
+      <p>
+        <RouterLink to="/configs">Your configurations</RouterLink> ·
+        <RouterLink to="/configs/new">Create configuration</RouterLink>
       </p>
     </template>
     <p v-if="error" role="alert" class="error">{{ error }}</p>

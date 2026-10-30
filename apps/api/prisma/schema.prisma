@@ -1,7 +1,7 @@
 generator client {
-  provider     = "prisma-client"
-  output       = "../src/generated/prisma"
-  moduleFormat = "cjs"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "cjs"
   importFileExtension = "js"
 }
 
@@ -10,12 +10,13 @@ datasource db {
 }
 
 model User {
-  id           String    @id @db.Char(36)
-  email        String    @unique @db.VarChar(254)
-  passwordHash String    @map("password_hash") @db.VarChar(255)
-  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
-  sessions     Session[]
+  id             String          @id @db.Char(36)
+  email          String          @unique @db.VarChar(254)
+  passwordHash   String          @map("password_hash") @db.VarChar(255)
+  createdAt      DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
+  sessions       Session[]
+  configurations Configuration[]
 
   @@map("users")
 }
@@ -43,4 +44,91 @@ model RefreshToken {
 
   @@index([sessionId])
   @@map("refresh_tokens")
+}
+
+enum GenerationStatus {
+  queued
+  running
+  succeeded
+  failed
+}
+
+model Configuration {
+  id          String              @id @db.Char(36)
+  userId      String              @map("user_id") @db.Char(36)
+  name        String              @db.VarChar(80)
+  description String              @db.VarChar(500)
+  services    Json
+  requestKey  String              @map("request_key") @db.Char(36)
+  inputDigest String              @map("input_digest") @db.Char(64)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  generations GenerationAttempt[]
+  revisions   ConfigRevision[]
+  secrets     ConfigSecret[]
+
+  @@unique([userId, requestKey])
+  @@index([userId, createdAt])
+  @@map("configurations")
+}
+
+model GenerationAttempt {
+  id              String           @id @db.Char(36)
+  configId        String           @map("config_id") @db.Char(36)
+  status          GenerationStatus @default(queued)
+  stage           String           @default("queued") @db.VarChar(32)
+  inputEncrypted  String           @map("input_encrypted") @db.MediumText
+  outputEncrypted String?          @map("output_encrypted") @db.MediumText
+  outputTruncated Boolean          @default(false) @map("output_truncated")
+  cleanupPending  Boolean          @default(false) @map("cleanup_pending")
+  errorCode       String?          @map("error_code") @db.VarChar(32)
+  leaseToken      String?          @map("lease_token") @db.Char(36)
+  deadlineAt      DateTime?        @map("deadline_at") @db.DateTime(3)
+  leaseExpiresAt  DateTime?        @map("lease_expires_at") @db.DateTime(3)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+  completedAt     DateTime?        @map("completed_at") @db.DateTime(3)
+  config          Configuration    @relation(fields: [configId], references: [id], onDelete: Cascade)
+  revision        ConfigRevision?
+
+  @@index([status, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@index([configId])
+  @@map("generation_attempts")
+}
+
+model ConfigRevision {
+  id           String            @id @db.Char(36)
+  configId     String            @map("config_id") @db.Char(36)
+  generationId String            @unique @map("generation_id") @db.Char(36)
+  version      Int
+  spec         Json
+  compose      String            @db.MediumText
+  digest       String            @db.Char(64)
+  artifactPath String            @map("artifact_path") @db.VarChar(255)
+  createdAt    DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  config       Configuration     @relation(fields: [configId], references: [id], onDelete: Cascade)
+  generation   GenerationAttempt @relation(fields: [generationId], references: [id], onDelete: Cascade)
+
+  @@unique([configId, version])
+  @@map("config_revisions")
+}
+
+model ConfigSecret {
+  id             String        @id @db.Char(36)
+  configId       String        @map("config_id") @db.Char(36)
+  name           String        @db.VarChar(100)
+  valueEncrypted String        @map("value_encrypted") @db.Text
+  config         Configuration @relation(fields: [configId], references: [id], onDelete: Cascade)
+
+  @@unique([configId, name])
+  @@map("config_secrets")
+}
+
+model GenerationSlot {
+  id             Int       @id
+  generationId   String?   @map("generation_id") @db.Char(36)
+  leaseToken     String?   @map("lease_token") @db.Char(36)
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.DateTime(3)
+
+  @@map("generation_slots")
 }

@@ -10,7 +10,7 @@ Milestone 1's verification gates remain incomplete. Backend and browser portions
 
 Install Docker Engine and Docker Compose v2. Commands below run from the repository root. The development override requires Compose 2.24.4 or later; Compose v2.29.1 is available in the implementation environment.
 
-As a human operator, create or update `.env` in the repository root using the keys in `.env.example`. Set distinct, nonempty `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` values. Set `DATABASE_URL` to the application account at `mysql:3306`, URL-encoding username/password components and matching the database/account initialization settings. Set `AUTH_ACCESS_TOKEN_SECRET` to a private random signing key containing at least 32 bytes. Set `AUTH_TRUSTED_ORIGINS` to the exact browser origin, including the port; adjust it if `WEB_PORT` changes. The root `.env` is ignored by Git. If it already exists, preserve its other settings. Then start the services:
+As a human operator, create or update `.env` in the repository root using the keys in `.env.example`. Set distinct, nonempty `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` values. Set `DATABASE_URL` to the application account at `mysql:3306`, URL-encoding username/password components and matching the database/account initialization settings. Set `AUTH_ACCESS_TOKEN_SECRET` to a private random signing key containing at least 32 bytes. Set `CONFIG_ENCRYPTION_KEY` to a separate 32-byte key encoded as 64 hexadecimal characters and retain it across restarts. Set `AUTH_TRUSTED_ORIGINS` to the exact browser origin, including the port; adjust it if `WEB_PORT` changes. The root `.env` is ignored by Git. If it already exists, preserve its other settings. Then start the services:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml up --build -d --wait
@@ -121,7 +121,7 @@ corepack pnpm test:api
 
 The workspace now has a resolved `pnpm-lock.yaml`; both Dockerfiles use `pnpm install --frozen-lockfile`. ESLint checks API/contracts TypeScript, Vue components, frontend TypeScript, and the auth test harness. API build/typecheck scripts generate the Prisma client first. The MySQL endpoint suite requires Docker and creates its own disposable database with generated test-only credentials; it does not load any environment file.
 
-For local source development, explicitly export `DATABASE_URL`, `AUTH_ACCESS_TOKEN_SECRET`, and `AUTH_TRUSTED_ORIGINS` in your shell without committing or printing credentials. Use a reachable development MySQL server: the Compose database has no host port. After installing dependencies, deploy migrations and build, then run API and web in separate terminals:
+For local source development, explicitly export `DATABASE_URL`, `AUTH_ACCESS_TOKEN_SECRET`, `AUTH_TRUSTED_ORIGINS`, and `CONFIG_ENCRYPTION_KEY` in your shell without committing or printing credentials. Use a reachable development MySQL server: the Compose database has no host port. After installing dependencies, deploy migrations and build, then run API and web in separate terminals:
 
 ```bash
 corepack pnpm --filter @docker-image-creator/api db:migrate
@@ -130,7 +130,7 @@ corepack pnpm --filter @docker-image-creator/api dev
 corepack pnpm --filter @docker-image-creator/web dev
 ```
 
-Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. API startup now requires MySQL and the auth settings, even if only liveness is used. Keep `http://127.0.0.1:5173` in trusted origins when using Vite.
+Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. API startup now requires MySQL, the auth settings, and the generation encryption key, even if only liveness is used. Keep `http://127.0.0.1:5173` in trusted origins when using Vite.
 
 ## Verification record and remaining prerequisites
 
@@ -142,6 +142,7 @@ Compose configuration was validated without starting containers, using explicit 
 MYSQL_PASSWORD=validation-only MYSQL_ROOT_PASSWORD=validation-root-only \
   DATABASE_URL=mysql://validation:validation@mysql:3306/validation \
   AUTH_ACCESS_TOKEN_SECRET=validation-only-key-with-at-least-32-bytes \
+  CONFIG_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
   docker compose --env-file /dev/null -f infra/docker-compose.yml config --quiet
 ```
 
@@ -158,3 +159,17 @@ Workspace ESLint passed with zero warnings, and all workspace builds passed. The
 The frontend suite (`corepack pnpm test:web`) uses Vitest/jsdom and mocked HTTP responses with the actual Vue views, router, and Pinia/session client. It needs no Docker, MySQL, credentials, or environment files. `corepack pnpm test` runs frontend checks first, followed by the disposable-MySQL endpoint suite.
 
 The pinned pnpm binary was downloaded with `npm exec --cache /tmp/docker-image-creator-npm-cache --yes --package=pnpm@10.34.9 -- pnpm --version`. Checks used that binary with its containing `node_modules/.bin` directory on `PATH`; the `corepack pnpm` commands above are the equivalent normal setup.
+
+## Configuration generation milestone
+
+See [configuration API](configuration-api.md) for request examples, status polling, persistence, and limits. After login, use `/configs/new`, `/configs`, and `/configs/:id`. This implementation uses a deterministic fake and does not start workloads or call a live LLM. Generation completes only when both the database revision and Compose file are saved.
+
+| Variable                | Required/default                                                       | Purpose                                                                                                                                       |
+| ----------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CONFIG_ENCRYPTION_KEY` | Required: 32 bytes encoded as exactly 64 hexadecimal characters; generate with `openssl rand -hex 32` | Separate AES-256-GCM key for input/output and generated database secrets; retain and back up alongside MySQL; key rotation is not implemented |
+| `CONFIG_ARTIFACT_ROOT`  | Source: repository `.runtime/configs`; Docker: `/app/.runtime/configs` | Private artifact root; Docker persists it in the `generated-configs` named volume                                                             |
+| `CONFIG_FAKE_DELAY_MS`  | `0`, maximum `300000`                                                  | Fake-provider delay; `120000` demonstrates two-minute generation without credentials or paid calls                                            |
+
+No private environment file was read or modified. A human operator must supply the new encryption key through deployment configuration before restarting the updated API. The `.env.example` remains secret-free. The Compose artifact contains secret placeholders, not passwords; runner secret injection is deferred with Docker execution.
+
+Checks for this change: all 34 frontend tests passed, including simulated three-minute polling and resumed saved jobs. Both migrations deployed twice and all 40 backend checks passed against disposable MySQL 8.4.11, including real Compose parsing with explicit non-secret configuration, owner isolation, encryption, file failure, idempotency, concurrency, deadlines, restart/lease cleanup, and graceful worker interruption. Workspace builds and type checks passed. Full updated development/production Docker image boot, actual workload image pulls/start/readiness, and real LLM calls were not performed for this milestone. The earlier dev-reload verification record above describes the previous image; do not treat it as a rerun of the updated image.

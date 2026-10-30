@@ -12,4 +12,4 @@ COPY --chown=node:node packages/contracts/package.json ./packages/contracts/pack
 USER node
 RUN pnpm install --frozen-lockfile
 COPY --chown=node:node . .
-RUN mkdir -p apps/api/src/generated
+RUN mkdir -p apps/api/src/generated .runtime/configs

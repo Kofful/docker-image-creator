@@ -17,6 +17,7 @@ COPY --from=build --chown=node:node /app/apps/api/dist ./apps/api/dist
 COPY --from=build --chown=node:node /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build --chown=node:node /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
 COPY --from=build --chown=node:node /app/apps/api/package.json ./apps/api/package.json
+RUN mkdir -p /app/.runtime/configs && chown -R node:node /app/.runtime
 WORKDIR /app/apps/api
 USER node
 EXPOSE 3000

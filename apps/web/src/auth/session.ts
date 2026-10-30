@@ -27,11 +27,13 @@ export function createAuthSession() {
 
   async function send(path: string, init: RequestInit = {}): Promise<Response> {
     try {
-      return await fetch(`/api/v1/auth/${path}`, {
+      return await fetch(path, {
         ...init,
         credentials: "omit",
         cache: "no-store",
-        signal: AbortSignal.timeout(10000),
+        signal: init.signal
+          ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)])
+          : AbortSignal.timeout(10000),
       });
     } catch {
       throw new AuthError(0);
@@ -43,7 +45,7 @@ export function createAuthSession() {
     body: CredentialsRequest | RefreshTokenRequest,
   ): Promise<AuthResponse & { expiresAt: number }> {
     const startedAt = Date.now();
-    const response = await send(path, {
+    const response = await send(`/api/v1/auth/${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -102,15 +104,23 @@ export function createAuthSession() {
     return pending;
   }
 
-  async function authorized(path: "me" | "logout"): Promise<Response> {
+  async function requestApi(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<Response> {
+    if (!path.startsWith("/api/v1/") || path.includes("://"))
+      throw new AuthError(0);
     const attempt = generation;
     if (!session) throw new AuthError(401);
     if (session.expiresAt <= Date.now() + 5000) await refresh();
     if (attempt !== generation) throw new AuthError(401);
     const request = () =>
       send(path, {
-        method: path === "logout" ? "POST" : "GET",
-        headers: { Authorization: `Bearer ${session?.access_token}` },
+        ...init,
+        headers: {
+          ...Object.fromEntries(new Headers(init.headers).entries()),
+          Authorization: `Bearer ${session?.access_token}`,
+        },
       });
     const token = session?.access_token;
     let response = await request();
@@ -129,7 +139,7 @@ export function createAuthSession() {
 
   async function loadUser() {
     const attempt = generation;
-    const response = await authorized("me");
+    const response = await requestApi("/api/v1/auth/me");
     let current: AuthUser;
     try {
       current = await response.json();
@@ -143,7 +153,7 @@ export function createAuthSession() {
 
   async function signOut() {
     try {
-      await authorized("logout");
+      await requestApi("/api/v1/auth/logout", { method: "POST" });
     } catch (error) {
       // Expired/revoked credentials already lost access. Other failures are retryable.
       if (!(error instanceof AuthError) || error.status !== 401) throw error;
@@ -157,5 +167,6 @@ export function createAuthSession() {
     signIn,
     loadUser,
     signOut,
+    requestApi,
   };
 }
