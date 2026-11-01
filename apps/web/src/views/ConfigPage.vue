@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { RouterLink, useRoute } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import type {
   ConfigResponse,
   GenerationResponse,
 } from "@docker-image-creator/contracts";
 import { useAuthStore } from "../auth/store";
 import { createConfigsClient } from "../configs/client";
+import DeleteConfigButton from "../configs/DeleteConfigButton.vue";
 const route = useRoute();
+const router = useRouter();
 const client = createConfigsClient(useAuthStore().requestApi);
 const config = ref<ConfigResponse | null>(null);
 const generation = ref<GenerationResponse | null>(null);
 const error = ref("");
 const reconnecting = ref(false);
 let abort: AbortController | undefined;
+async function removed() {
+  abort?.abort();
+  await router.replace("/configs");
+}
 async function load() {
   abort?.abort();
   abort = new AbortController();
@@ -73,6 +79,14 @@ onUnmounted(() => abort?.abort());
         config.revision.compose
       }}</pre>
     </template>
+    <DeleteConfigButton
+      v-if="config && generation"
+      :id="config.id"
+      :key="config.id"
+      :name="config.name"
+      :generation-status="generation.status"
+      @deleted="removed"
+    />
     <p><RouterLink to="/configs">Your configurations</RouterLink></p>
   </section>
 </template>

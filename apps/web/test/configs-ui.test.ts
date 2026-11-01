@@ -45,6 +45,7 @@ describe("configuration views", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(json(tokens()));
   });
   afterEach(() => {
     wrapper?.unmount();
@@ -52,7 +53,6 @@ describe("configuration views", () => {
   });
   async function open(path: string) {
     const pinia = createPinia();
-    fetchMock.mockResolvedValueOnce(json(tokens()));
     await useAuthStore(pinia).signIn("login", credentials);
     const router = createAppRouter(pinia, createMemoryHistory());
     await router.push(path);
@@ -129,4 +129,219 @@ describe("configuration views", () => {
     ).toBe(false);
     expect(wrapper!.text()).toContain("Compose saved");
   });
+
+  it("confirms the selected list item, disables duplicate deletion, and preserves other items", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce(
+      json([config, { ...config, id: "config-two", name: "Other starter" }]),
+    );
+    await open("/configs");
+    let complete!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const button = wrapper!.get('button[aria-label="Delete My starter"]');
+    await button.trigger("click");
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining('Delete "My starter"?'),
+    );
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(button.attributes("aria-busy")).toBe("true");
+    await button.trigger("click");
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE"),
+    ).toHaveLength(1);
+    complete(new Response(null, { status: 204 }));
+    await flushPromises();
+    expect(wrapper!.find('a[href="/configs/config-one"]').exists()).toBe(false);
+    expect(wrapper!.get('a[href="/configs/config-two"]').text()).toBe(
+      "Other starter",
+    );
+    expect(wrapper!.text()).toContain("Configuration removed.");
+    const deletion = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "DELETE",
+    );
+    expect(deletion?.[0]).toBe("/api/v1/configs/config-one");
+    expect(new Headers(deletion?.[1]?.headers).get("Authorization")).toMatch(
+      /^Bearer /,
+    );
+  });
+
+  it.each(["/configs", "/configs/config-one"])(
+    "leaves %s unchanged when confirmation is cancelled",
+    async (path) => {
+      vi.spyOn(window, "confirm").mockReturnValue(false);
+      fetchMock.mockResolvedValueOnce(
+        json(path === "/configs" ? [config] : config),
+      );
+      const router = await open(path);
+      await wrapper!
+        .get('button[aria-label="Delete My starter"]')
+        .trigger("click");
+      await flushPromises();
+      expect(router.currentRoute.value.path).toBe(path);
+      expect(wrapper!.text()).toContain("My starter");
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE"),
+      ).toBe(false);
+    },
+  );
+
+  it("returns from deleted detail to the list and shows its empty state", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce(json(config));
+    const router = await open("/configs/config-one");
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(json([]));
+    await wrapper!
+      .get('button[aria-label="Delete My starter"]')
+      .trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/configs");
+    expect(wrapper!.text()).toContain("No configurations yet.");
+    expect(wrapper!.find("pre").exists()).toBe(false);
+  });
+
+  it("does not restore a deleted row when an earlier list refresh completes", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockResolvedValueOnce(json([config]));
+    await open("/configs");
+    let finish!: (response: Response) => void;
+    fetchMock
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await wrapper!.get("button.secondary").trigger("click");
+    await wrapper!
+      .get('button[aria-label="Delete My starter"]')
+      .trigger("click");
+    await flushPromises();
+    finish(json([config]));
+    await flushPromises();
+    expect(wrapper!.text()).toContain("No configurations yet.");
+    expect(wrapper!.find('a[href="/configs/config-one"]').exists()).toBe(false);
+  });
+
+  it.each(["/configs", "/configs/config-one"])(
+    "can delete a failed generation with no revision from %s",
+    async (path) => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const failed: ConfigResponse = {
+        ...config,
+        revision: null,
+        generation: { ...generation, status: "failed" },
+      };
+      fetchMock.mockResolvedValueOnce(
+        json(path === "/configs" ? [failed] : failed),
+      );
+      await open(path);
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      if (path !== "/configs") fetchMock.mockResolvedValueOnce(json([]));
+      const button = wrapper!.get('button[aria-label="Delete My starter"]');
+      expect(button.attributes("disabled")).toBeUndefined();
+      await button.trigger("click");
+      await flushPromises();
+      expect(wrapper!.text()).toContain("No configurations yet.");
+    },
+  );
+
+  it.each(["/configs", "/configs/config-one"])(
+    "reconciles an already deleted configuration on %s",
+    async (path) => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      fetchMock.mockResolvedValueOnce(
+        json(path === "/configs" ? [config] : config),
+      );
+      const router = await open(path);
+      fetchMock.mockResolvedValueOnce(json({}, 404));
+      if (path !== "/configs") fetchMock.mockResolvedValueOnce(json([]));
+      await wrapper!
+        .get('button[aria-label="Delete My starter"]')
+        .trigger("click");
+      await flushPromises();
+      expect(router.currentRoute.value.path).toBe("/configs");
+      expect(wrapper!.text()).toContain("No configurations yet.");
+      expect(wrapper!.find('[role="alert"]').exists()).toBe(false);
+    },
+  );
+
+  it.each(["queued", "running"] as const)(
+    "disables list deletion during %s generation and enables it after refresh",
+    async (status) => {
+      const confirm = vi.spyOn(window, "confirm");
+      fetchMock.mockResolvedValueOnce(
+        json([{ ...config, generation: { ...generation, status } }]),
+      );
+      await open("/configs");
+      const button = wrapper!.get('button[aria-label="Delete My starter"]');
+      expect(button.attributes("disabled")).toBeDefined();
+      expect(wrapper!.text()).toContain(
+        "Deletion is available after generation finishes.",
+      );
+      await button.trigger("click");
+      expect(confirm).not.toHaveBeenCalled();
+      fetchMock.mockResolvedValueOnce(json([config]));
+      await wrapper!.get("button.secondary").trigger("click");
+      await flushPromises();
+      expect(button.attributes("disabled")).toBeUndefined();
+    },
+  );
+
+  it("enables detail deletion when polling finishes", async () => {
+    let finish!: (response: Response) => void;
+    fetchMock
+      .mockResolvedValueOnce(
+        json({
+          ...config,
+          revision: null,
+          generation: { ...generation, status: "running" },
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+      );
+    await open("/configs/config-one");
+    const button = wrapper!.get('button[aria-label="Delete My starter"]');
+    expect(button.attributes("disabled")).toBeDefined();
+    fetchMock.mockResolvedValueOnce(json(config));
+    finish(json(generation));
+    await flushPromises();
+    expect(button.attributes("disabled")).toBeUndefined();
+  });
+
+  it.each([
+    [403, "Generation is still in progress"],
+    [500, "Could not confirm deletion"],
+    [0, "Could not confirm deletion"],
+  ])(
+    "keeps a configuration visible after deletion failure %s and allows retry",
+    async (status, message) => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      fetchMock.mockResolvedValueOnce(json([config]));
+      await open("/configs");
+      if (status === 0)
+        fetchMock.mockRejectedValueOnce(new TypeError("lost response"));
+      else fetchMock.mockResolvedValueOnce(json({}, status));
+      const button = wrapper!.get('button[aria-label="Delete My starter"]');
+      await button.trigger("click");
+      await flushPromises();
+      expect(wrapper!.get('[role="alert"]').text()).toContain(message);
+      expect(wrapper!.get('a[href="/configs/config-one"]').text()).toBe(
+        config.name,
+      );
+      expect(button.attributes("disabled")).toBeUndefined();
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await button.trigger("click");
+      await flushPromises();
+      expect(wrapper!.text()).toContain("No configurations yet.");
+    },
+  );
 });

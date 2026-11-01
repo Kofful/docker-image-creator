@@ -23,7 +23,7 @@ For each service collect a unique DNS-safe name, catalog image/tag, environment 
 
 Display how services connect by service name and container port. Default host exposure is disabled; selected host bindings use loopback for the local MVP. Named volume persistence is explicit. Provide template commands that keep application containers running; report that shell access is unavailable when an image lacks a supported shell.
 
-Current milestone: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. Provider selection, runtime controls, logs, terminals, edit/export/delete remain planned. [Configuration API](configuration-api.md) defines implemented inputs; the builder fields below that exceed that contract are future scope.
+Current milestone: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. List and detail pages also provide confirmed configuration deletion once generation finishes. Provider selection, runtime controls, logs, terminals, and edit/export remain planned. [Configuration API](configuration-api.md) defines implemented inputs; the builder fields below that exceed that contract are future scope.
 
 ## Main workflows
 

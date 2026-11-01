@@ -39,6 +39,11 @@ export function createConfigsClient(request: ApiRequest) {
   async function list(): Promise<ConfigResponse[]> {
     return (await request("/api/v1/configs")).json();
   }
+  async function remove(id: string): Promise<void> {
+    await request(`/api/v1/configs/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  }
   async function poll(
     id: string,
     options: {
@@ -91,7 +96,7 @@ export function createConfigsClient(request: ApiRequest) {
       );
     }
   }
-  return { create, get, list, poll };
+  return { create, get, list, remove, poll };
 }
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {

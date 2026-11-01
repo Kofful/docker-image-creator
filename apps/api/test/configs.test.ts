@@ -39,6 +39,7 @@ import {
   parseCandidate,
 } from "../src/configs/compose.compiler";
 import { ArtifactStore } from "../src/configs/artifact.store";
+import { ConfigArtifactCleanup } from "../src/configs/config-artifact-cleanup";
 
 let app: INestApplication;
 let prisma: PrismaService;
@@ -138,9 +139,12 @@ async function status(
       .expect(200)
   ).body as GenerationResponse;
 }
-async function finished(id: string): Promise<GenerationResponse> {
+async function finished(
+  id: string,
+  token = auth.access_token,
+): Promise<GenerationResponse> {
   for (let attempt = 0; attempt < 150; attempt++) {
-    const result = await status(id);
+    const result = await status(id, token);
     if (result.status === "succeeded" || result.status === "failed")
       return result;
     await setTimeout(10);
@@ -393,6 +397,7 @@ test("two workers claim each job once and obey the two-slot global cap", async (
     settings,
     app.get(SecretBox),
     app.get(ArtifactStore),
+    app.get(ConfigArtifactCleanup),
   );
   await Promise.all([worker.tick(), second.tick()]);
   for (let i = 0; calls < 2 && i < 50; i++) await setTimeout(10);
@@ -565,5 +570,328 @@ test("graceful shutdown records an interrupted generation before closing databas
       where: { generationId: created.generationId },
     }),
     0,
+  );
+});
+
+function deleteConfig(id: string, token = auth.access_token) {
+  return request(app.getHttpServer())
+    .delete(`/api/v1/configs/${id}`)
+    .auth(token, { type: "bearer" });
+}
+
+test("deletion retains DB history and secrets, removes only owned files, hides reads and serializes repeat requests", async () => {
+  const key = randomUUID();
+  const created = (await create(input, auth.access_token, key).expect(202))
+    .body as CreateConfigResponse;
+  const other = await register();
+  const untouched = (await create(input, other.access_token).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  await finished(created.generationId);
+  await finished(untouched.generationId, other.access_token);
+  const revision = await prisma.configRevision.findUniqueOrThrow({
+    where: { generationId: created.generationId },
+  });
+  const secrets = await prisma.configSecret.findMany({
+    where: { configId: created.configId },
+  });
+  const responses = await Promise.all([
+    deleteConfig(created.configId),
+    deleteConfig(created.configId),
+  ]);
+  assert.deepEqual(
+    responses.map((response) => response.status).sort(),
+    [204, 404],
+  );
+  const deleted = await prisma.configuration.findUniqueOrThrow({
+    where: { id: created.configId },
+  });
+  assert.ok(deleted.deletedAt);
+  assert.equal(deleted.cleanupPending, false);
+  assert.deepEqual(
+    await prisma.configRevision.findUniqueOrThrow({
+      where: { id: revision.id },
+    }),
+    revision,
+  );
+  assert.deepEqual(
+    await prisma.configSecret.findMany({
+      where: { configId: created.configId },
+    }),
+    secrets,
+  );
+  assert.equal(
+    (
+      await prisma.generationAttempt.findUniqueOrThrow({
+        where: { id: created.generationId },
+      })
+    ).status,
+    "succeeded",
+  );
+  await assert.rejects(stat(join(root, revision.artifactPath)), {
+    code: "ENOENT",
+  });
+  const otherRevision = await prisma.configRevision.findUniqueOrThrow({
+    where: { generationId: untouched.generationId },
+  });
+  assert.ok(await stat(join(root, otherRevision.artifactPath)));
+  for (const path of [
+    `/configs/${created.configId}`,
+    created.statusUrl.replace("/api/v1", ""),
+  ])
+    await request(app.getHttpServer())
+      .get(`/api/v1${path}`)
+      .auth(auth.access_token, { type: "bearer" })
+      .expect(404);
+  assert.deepEqual(
+    (
+      await request(app.getHttpServer())
+        .get("/api/v1/configs")
+        .auth(auth.access_token, { type: "bearer" })
+        .expect(200)
+    ).body,
+    [],
+  );
+  await create(input, auth.access_token, key).expect(400);
+  await create({ ...input, name: "Changed" }, auth.access_token, key).expect(
+    400,
+  );
+});
+
+test("deletion rejects queued and running generation with 403 without changing the configuration", async () => {
+  let release!: (value: string) => void;
+  generate = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  await deleteConfig(created.configId).expect(403);
+  await worker.tick();
+  for (let i = 0; !release && i < 50; i++) await setTimeout(10);
+  await deleteConfig(created.configId).expect(403);
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).deletedAt,
+    null,
+  );
+  release(JSON.stringify({ schemaVersion: 1, services: input.services }));
+  assert.equal((await finished(created.generationId)).status, "succeeded");
+  await deleteConfig(created.configId).expect(204);
+});
+
+test("deletion enforces ownership, authentication, origin, UUID validation and session revocation", async () => {
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  const other = await register();
+  await request(app.getHttpServer())
+    .delete(`/api/v1/configs/${created.configId}`)
+    .expect(401);
+  await deleteConfig(created.configId, other.access_token).expect(404);
+  await deleteConfig(randomUUID()).expect(404);
+  await deleteConfig("invalid").expect(400);
+  await deleteConfig(created.configId)
+    .set("Origin", "https://evil.example")
+    .expect(403);
+  await request(app.getHttpServer())
+    .post("/api/v1/auth/logout")
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(204);
+  await deleteConfig(created.configId).expect(401);
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).deletedAt,
+    null,
+  );
+});
+
+test("failed generation with no artifact can be deleted without creating directories", async () => {
+  generate = async () => "invalid";
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal((await finished(created.generationId)).status, "failed");
+  await deleteConfig(created.configId).expect(204);
+  await assert.rejects(stat(join(root, auth.user.id)), { code: "ENOENT" });
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).cleanupPending,
+    false,
+  );
+});
+
+test("cleanup failure still returns 204 and survives restart until safe file removal succeeds", async () => {
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  await worker.tick();
+  await finished(created.generationId);
+  const revision = await prisma.configRevision.findUniqueOrThrow({
+    where: { generationId: created.generationId },
+  });
+  const alias = join(root, "symlink-root");
+  await symlink(root, alias);
+  Object.assign(settings, { root: alias });
+  await deleteConfig(created.configId).expect(204);
+  assert.ok(await stat(join(root, revision.artifactPath)));
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).cleanupPending,
+    true,
+  );
+  await deleteConfig(created.configId).expect(404);
+  await app.close();
+  await start();
+  await worker.tick();
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).cleanupPending,
+    true,
+  );
+  Object.assign(settings, { root });
+  await worker.tick();
+  await assert.rejects(stat(join(root, revision.artifactPath)), {
+    code: "ENOENT",
+  });
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).cleanupPending,
+    false,
+  );
+  assert.equal(
+    await prisma.configRevision.count({
+      where: { configId: created.configId },
+    }),
+    1,
+  );
+});
+
+test("deleting a configuration immediately frees capacity at the 20-configuration quota", async () => {
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  await worker.tick();
+  await finished(created.generationId);
+  await prisma.configuration.createMany({
+    data: Array.from({ length: 19 }, () => ({
+      id: randomUUID(),
+      userId: auth.user.id,
+      name: "Retained",
+      description: "",
+      services: [],
+      requestKey: randomUUID(),
+      inputDigest: "0".repeat(64),
+    })),
+  });
+  await create().expect(409);
+  await deleteConfig(created.configId).expect(204);
+  await create().expect(202);
+  assert.equal(
+    await prisma.configuration.count({
+      where: { userId: auth.user.id, deletedAt: null },
+    }),
+    20,
+  );
+  assert.equal(
+    await prisma.configuration.count({ where: { userId: auth.user.id } }),
+    21,
+  );
+});
+
+test("deletion waits for file publication and removes the committed artifact", async (t) => {
+  const files = app.get(ArtifactStore);
+  const write = files.write.bind(files);
+  let entered!: () => void;
+  const writing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  t.mock.method(
+    files,
+    "write",
+    async (...args: Parameters<ArtifactStore["write"]>) => {
+      entered();
+      await blocked;
+      return write(...args);
+    },
+  );
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  await worker.tick();
+  await writing;
+  let responded = false;
+  const deletion = deleteConfig(created.configId).then((response) => {
+    responded = true;
+    return response;
+  });
+  try {
+    await setTimeout(40);
+    assert.equal(responded, false);
+  } finally {
+    release();
+  }
+  assert.equal((await deletion).status, 204);
+  await assert.rejects(stat(join(root, auth.user.id, created.configId)), {
+    code: "ENOENT",
+  });
+  assert.equal(
+    (
+      await prisma.configuration.findUniqueOrThrow({
+        where: { id: created.configId },
+      })
+    ).cleanupPending,
+    false,
+  );
+});
+
+test("persistent cleanup failures do not starve configurations beyond the first batch", async (t) => {
+  const ids = Array.from({ length: 21 }, () => randomUUID()).sort();
+  const healthy = ids[20]!;
+  await prisma.configuration.createMany({
+    data: ids.map((id) => ({
+      id,
+      userId: auth.user.id,
+      name: "Deleted",
+      description: "",
+      services: [],
+      requestKey: randomUUID(),
+      inputDigest: "0".repeat(64),
+      deletedAt: new Date(),
+      cleanupPending: true,
+    })),
+  });
+  const files = app.get(ArtifactStore);
+  const remove = files.removeConfig.bind(files);
+  t.mock.method(
+    files,
+    "removeConfig",
+    async (userId: string, configId: string) => {
+      if (configId !== healthy) throw new Error("Unavailable artifact");
+      await remove(userId, configId);
+    },
+  );
+  await worker.tick();
+  await worker.tick();
+  assert.equal(
+    (await prisma.configuration.findUniqueOrThrow({ where: { id: healthy } }))
+      .cleanupPending,
+    false,
+  );
+  assert.equal(
+    await prisma.configuration.count({ where: { cleanupPending: true } }),
+    20,
   );
 });

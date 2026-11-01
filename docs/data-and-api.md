@@ -10,8 +10,9 @@ Implemented configuration contracts are documented in [configuration API](config
 | `GET /generations/:id` | Owned generation status/stage, redacted error, timestamps, revision ID, provider and runtime-validation flags, cleanup marker                   |
 | `GET /configs/:id`     | Owned configuration, latest generation and successful initial revision with Compose, digest and relative artifact path                          |
 | `GET /configs`         | Latest owned configurations, at most 20; supports job discovery/recovery                                                                        |
+| `DELETE /configs/:id`  | Soft-delete owned configuration and remove local artifacts; 204, repeated DELETE 404, active generation 403; failed cleanup retried durably     |
 
-Current persistence adds `Configuration`, `GenerationAttempt`, `ConfigRevision`, `ConfigSecret`, and two seeded `GenerationSlot` rows through migration `20261030010000_configs`. Inputs, returned output and generated passwords are encrypted. `ConfigRevision` is the immutable initial revision; subsequent revision/edit/history/export/delete and revalidation contracts remain planned. Current transport types are in `packages/contracts`; no ORM model is imported by the frontend.
+Current persistence adds `Configuration`, `GenerationAttempt`, `ConfigRevision`, `ConfigSecret`, and two seeded `GenerationSlot` rows through migration `20261030010000_configs`. Migration `20261101000000_config_deletion` adds `Configuration.deletedAt` and a durable artifact-cleanup marker. Inputs, returned output and generated passwords are encrypted. `ConfigRevision` is the immutable initial revision; subsequent revision/edit/history/export and revalidation contracts remain planned. Deletion retains all database records but hides configuration and generation reads, releases quota, and rejects replay of the original creation key with 400. Current transport types are in `packages/contracts`; no ORM model is imported by the frontend.
 
 ## Implemented auth entities and planned application entities
 
@@ -35,32 +36,32 @@ Enforce `(configId, version)` uniqueness, scope idempotency keys by owner and ac
 
 ## REST outline
 
-Auth, liveness and the four configuration routes above are implemented; catalog, revision mutation/history, export, Docker lifecycle, deletion and terminal routes remain planned. Prefix with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected HTTP endpoints use `Authorization: Bearer <access_token>`. Resource lookups include owner constraints; use 404 for resources not visible to the caller. See [authentication](authentication.md) for exact implemented payloads and errors.
+Auth, liveness and the five configuration routes above are implemented; catalog, revision mutation/history, export, Docker lifecycle, volume deletion and terminal routes remain planned. Prefix with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected HTTP endpoints use `Authorization: Bearer <access_token>`. Resource lookups include owner constraints; use 404 for resources not visible to the caller. See [authentication](authentication.md) for exact implemented payloads and errors.
 
-| Method and path                                   | Result                                                                                                               |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/register`                             | Create email/password account and return access/refresh tokens (201)                                                 |
-| `POST /auth/login`                                | Verify credentials and return a new session's token pair (200)                                                       |
-| `POST /auth/refresh_token`                        | Consume refresh token and return rotated pair (200); replay revokes session                                          |
-| `POST /auth/logout`                               | Revoke authenticated session and all its tokens (204); terminal cleanup remains planned                              |
-| `GET /auth/me`                                    | Return minimal current user                                                                                          |
-| `GET /catalog/images`                             | Approved images, tags, settings schemas, capabilities                                                                |
-| `POST /generations` (planned alias)               | Implemented: validate builder input and queue generation; return 202 with an action ID; Docker trial remains planned |
-| `GET /generations/:id`                            | Implemented: owned generation stage/status, runtimeValidation not_performed, and redacted failure                    |
-| `GET /configs`                                    | Paginated owned configs and deployment summary                                                                       |
-| `POST /configs`                                   | Implemented: save a configuration and queue background generation; return 202 immediately                            |
-| `GET /configs/:id`                                | Config, selected revision, masked preview, deployment                                                                |
-| `POST /configs/:id/revisions`                     | Save validated edited/generated specification as a new revision                                                      |
-| `GET /configs/:id/revisions`                      | Revision history                                                                                                     |
-| `GET /configs/:id/export`                         | Compose artifact with secret placeholders and setup instructions                                                     |
-| `POST /configs/:id/start`                         | Explicit revision ID + idempotency key; return 202 and operation ID                                                  |
-| `POST /configs/:id/stop`                          | Return 202; preserve volumes                                                                                         |
-| `GET /operations/:id`                             | Owned operation progress/result                                                                                      |
-| `GET /configs/:id/services`                       | Observed statuses and approved host endpoints                                                                        |
-| `GET /configs/:id/services/:serviceId/logs`       | Bounded, redacted service logs                                                                                       |
-| `POST /configs/:id/services/:serviceId/terminals` | Authorize running service and issue short-lived one-use connection ticket                                            |
-| `DELETE /configs/:id`                             | Reject active stacks; remove metadata after scoped cleanup                                                           |
-| `POST /configs/:id/delete-data`                   | Separate confirmed scoped volume deletion operation                                                                  |
+| Method and path                                   | Result                                                                                                                       |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/register`                             | Create email/password account and return access/refresh tokens (201)                                                         |
+| `POST /auth/login`                                | Verify credentials and return a new session's token pair (200)                                                               |
+| `POST /auth/refresh_token`                        | Consume refresh token and return rotated pair (200); replay revokes session                                                  |
+| `POST /auth/logout`                               | Revoke authenticated session and all its tokens (204); terminal cleanup remains planned                                      |
+| `GET /auth/me`                                    | Return minimal current user                                                                                                  |
+| `GET /catalog/images`                             | Approved images, tags, settings schemas, capabilities                                                                        |
+| `POST /generations` (planned alias)               | Implemented: validate builder input and queue generation; return 202 with an action ID; Docker trial remains planned         |
+| `GET /generations/:id`                            | Implemented: owned generation stage/status, runtimeValidation not_performed, and redacted failure                            |
+| `GET /configs`                                    | Paginated owned configs and deployment summary                                                                               |
+| `POST /configs`                                   | Implemented: save a configuration and queue background generation; return 202 immediately                                    |
+| `GET /configs/:id`                                | Config, selected revision, masked preview, deployment                                                                        |
+| `POST /configs/:id/revisions`                     | Save validated edited/generated specification as a new revision                                                              |
+| `GET /configs/:id/revisions`                      | Revision history                                                                                                             |
+| `GET /configs/:id/export`                         | Compose artifact with secret placeholders and setup instructions                                                             |
+| `POST /configs/:id/start`                         | Explicit revision ID + idempotency key; return 202 and operation ID                                                          |
+| `POST /configs/:id/stop`                          | Return 202; preserve volumes                                                                                                 |
+| `GET /operations/:id`                             | Owned operation progress/result                                                                                              |
+| `GET /configs/:id/services`                       | Observed statuses and approved host endpoints                                                                                |
+| `GET /configs/:id/services/:serviceId/logs`       | Bounded, redacted service logs                                                                                               |
+| `POST /configs/:id/services/:serviceId/terminals` | Authorize running service and issue short-lived one-use connection ticket                                                    |
+| `DELETE /configs/:id`                             | Implemented: 403 during generation; otherwise soft-delete and remove local artifacts, 204; repeat 404; durable cleanup retry |
+| `POST /configs/:id/delete-data`                   | Separate confirmed scoped volume deletion operation                                                                          |
 
 Exact payload schemas and error envelopes belong in `packages/contracts` during implementation. Generation input never contains plaintext secrets: secret values are submitted through a protected API boundary, stored encrypted, and referenced by opaque ID. The server revalidates proposals on save and on start. Long operations return IDs for polling; request cancellation does not imply a Docker operation was canceled.
 

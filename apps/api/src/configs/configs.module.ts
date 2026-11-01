@@ -6,6 +6,7 @@ import { ConfigsService } from "./configs.service";
 import { GenerationSettings } from "./generation.settings";
 import { SecretBox } from "./secret-box";
 import { ArtifactStore } from "./artifact.store";
+import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
 import {
   FakeGenerationProvider,
   GenerationProvider,
@@ -21,6 +22,7 @@ import { GenerationWorker } from "./generation.worker";
     GenerationSettings,
     SecretBox,
     ArtifactStore,
+    ConfigArtifactCleanup,
     GenerationWorker,
     { provide: GenerationProvider, useClass: FakeGenerationProvider },
   ],

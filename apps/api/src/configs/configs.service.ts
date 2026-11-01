@@ -1,5 +1,7 @@
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -12,11 +14,13 @@ import type {
 } from "@docker-image-creator/contracts";
 import { PrismaService } from "../database/prisma.service";
 import {
+  type Configuration,
   type GenerationAttempt,
   type ConfigRevision,
 } from "../generated/prisma/client";
 import { SecretBox } from "./secret-box";
 import { validateServices } from "./compose.compiler";
+import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
 
 export function generationResponse(
   row: GenerationAttempt & { revision?: ConfigRevision | null },
@@ -55,6 +59,7 @@ export class ConfigsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly box: SecretBox,
+    private readonly cleanup: ConfigArtifactCleanup,
   ) {}
   async create(
     userId: string,
@@ -75,6 +80,10 @@ export class ConfigsService {
         include: { generations: { take: 1 } },
       });
       if (existing) {
+        if (existing.deletedAt)
+          throw new BadRequestException(
+            "Idempotency key belongs to a deleted configuration",
+          );
         if (existing.inputDigest !== inputDigest)
           throw new ConflictException(
             "Idempotency key was used with different settings",
@@ -93,7 +102,11 @@ export class ConfigsService {
         throw new ConflictException(
           "A configuration is already being generated for this user",
         );
-      if ((await tx.configuration.count({ where: { userId } })) >= 20)
+      if (
+        (await tx.configuration.count({
+          where: { userId, deletedAt: null },
+        })) >= 20
+      )
         throw new ConflictException("Configuration quota reached");
       await tx.configuration.create({
         data: {
@@ -123,9 +136,37 @@ export class ConfigsService {
       pollAfterMs: 2000,
     };
   }
+  async delete(userId: string, id: string): Promise<void> {
+    await this.prisma.$transaction(
+      async (tx) => {
+        // Use the admission lock so a freed quota slot is visible to new creation.
+        await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+        // File publication takes this same lock before writing any artifacts.
+        await tx.$queryRaw`SELECT id FROM configurations WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`;
+        const config = await tx.configuration.findFirst({
+          where: { id, userId, deletedAt: null },
+        });
+        if (!config) throw new NotFoundException("Configuration not found");
+        const active = await tx.generationAttempt.count({
+          where: { configId: id, status: { in: ["queued", "running"] } },
+        });
+        if (active)
+          throw new ForbiddenException(
+            "Cannot delete a configuration during generation",
+          );
+        await tx.configuration.update({
+          where: { id },
+          data: { deletedAt: new Date(), cleanupPending: true },
+        });
+      },
+      { isolationLevel: "ReadCommitted" },
+    );
+    // Deletion is already durable. A cleanup failure must not resurrect it.
+    await this.cleanup.clean(userId, id).catch(() => undefined);
+  }
   async generation(userId: string, id: string): Promise<GenerationResponse> {
     const row = await this.prisma.generationAttempt.findFirst({
-      where: { id, config: { userId } },
+      where: { id, config: { userId, deletedAt: null } },
       include: { revision: true },
     });
     if (!row) throw new NotFoundException("Generation not found");
@@ -133,7 +174,7 @@ export class ConfigsService {
   }
   async get(userId: string, id: string): Promise<ConfigResponse> {
     const row = await this.prisma.configuration.findFirst({
-      where: { id, userId },
+      where: { id, userId, deletedAt: null },
       include: {
         generations: {
           orderBy: { createdAt: "desc" },
@@ -144,7 +185,14 @@ export class ConfigsService {
     });
     if (!row?.generations[0])
       throw new NotFoundException("Configuration not found");
-    const generation = row.generations[0];
+    return this.response(row);
+  }
+  private response(
+    row: Configuration & {
+      generations: (GenerationAttempt & { revision: ConfigRevision | null })[];
+    },
+  ): ConfigResponse {
+    const generation = row.generations[0]!;
     const revision = generation.revision;
     return {
       id: row.id,
@@ -166,11 +214,19 @@ export class ConfigsService {
   }
   async list(userId: string): Promise<ConfigResponse[]> {
     const rows = await this.prisma.configuration.findMany({
-      where: { userId },
+      where: { userId, deletedAt: null },
       orderBy: { createdAt: "desc" },
       take: 20,
-      select: { id: true },
+      include: {
+        generations: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          include: { revision: true },
+        },
+      },
     });
-    return Promise.all(rows.map((row) => this.get(userId, row.id)));
+    return rows
+      .filter((row) => row.generations.length > 0)
+      .map((row) => this.response(row));
   }
 }

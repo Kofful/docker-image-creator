@@ -11,6 +11,7 @@ import { GenerationProvider } from "./generation.provider";
 import { GenerationSettings } from "./generation.settings";
 import { SecretBox } from "./secret-box";
 import { ArtifactStore } from "./artifact.store";
+import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
 import {
   compileCompose,
   parseCandidate,
@@ -41,6 +42,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
     private readonly settings: GenerationSettings,
     private readonly box: SecretBox,
     private readonly files: ArtifactStore,
+    private readonly configCleanup: ConfigArtifactCleanup,
   ) {}
 
   onModuleInit(): void {
@@ -92,7 +94,11 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
         },
       });
       const cleanup = await this.prisma.generationAttempt.findMany({
-        where: { status: "failed", cleanupPending: true },
+        where: {
+          status: "failed",
+          cleanupPending: true,
+          config: { deletedAt: null },
+        },
         include: { config: true },
         take: 20,
       });
@@ -107,6 +113,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
           /* Preserve the recovery marker without logging paths or content. */
         }
       }
+      await this.configCleanup.retryPending();
       for (let index = 0; index < 2 && !this.stopped; index++) {
         const job = await this.claim();
         if (!job) break;
@@ -143,7 +150,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
         if (!slots[0]) return null;
         const rows = await tx.$queryRaw<
           { id: string }[]
-        >`SELECT id FROM generation_attempts WHERE status = 'queued' ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`;
+        >`SELECT g.id FROM generation_attempts g JOIN configurations c ON c.id = g.config_id WHERE g.status = 'queued' AND c.deleted_at IS NULL ORDER BY g.created_at, g.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
         if (!rows[0]) return null;
         const id = rows[0].id;
         const token = randomUUID();
@@ -238,15 +245,13 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
         data: { stage },
       });
       abort.signal.throwIfAborted();
-      const artifactPath = await this.files.write(
-        job.config.userId,
-        job.configId,
-        revisionId,
-        compose,
-      );
-      wroteFile = true;
-      abort.signal.throwIfAborted();
       await this.prisma.$transaction(async (tx) => {
+        // Serialize publication with deletion, including stale workers on other processes.
+        await tx.$queryRaw`SELECT id FROM configurations WHERE id = ${job.configId} FOR UPDATE`;
+        const config = await tx.configuration.findFirst({
+          where: { id: job.configId, deletedAt: null },
+        });
+        if (!config) throw new JobFailure("INTERRUPTED");
         const result = await tx.generationAttempt.updateMany({
           where: { ...owned, leaseExpiresAt: { gt: new Date() } },
           data: {
@@ -256,6 +261,14 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
           },
         });
         if (!result.count) throw new JobFailure("INTERRUPTED");
+        const artifactPath = await this.files.write(
+          job.config.userId,
+          job.configId,
+          revisionId,
+          compose,
+        );
+        wroteFile = true;
+        abort.signal.throwIfAborted();
         await tx.configRevision.create({
           data: {
             id: revisionId,

@@ -63,8 +63,29 @@ export class ArtifactStore {
     configId: string,
     revisionId: string,
   ): Promise<void> {
-    // Re-check every parent before scoped deletion, never follow a supplied path.
-    const directory = await this.directory(userId, configId, revisionId);
-    await rm(directory, { recursive: true, force: true });
+    await this.removeDirectory([userId, configId, revisionId]);
+  }
+  async removeConfig(userId: string, configId: string): Promise<void> {
+    await this.removeDirectory([userId, configId]);
+  }
+  private async removeDirectory(ids: string[]): Promise<void> {
+    for (const id of ids)
+      if (!/^[a-f0-9-]{36}$/.test(id))
+        throw new Error("Invalid server identity");
+    // Missing artifacts are already clean. Never create paths during cleanup.
+    try {
+      if ((await realpath(this.settings.root)) !== this.settings.root)
+        throw new Error("Artifact root contains a symlink");
+      let directory = this.settings.root;
+      for (const id of ids) {
+        directory = join(directory, id);
+        const info = await lstat(directory);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new Error("Invalid artifact directory");
+      }
+      await rm(directory, { recursive: true, force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 }

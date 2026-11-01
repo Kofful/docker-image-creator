@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   HttpCode,
@@ -54,6 +55,15 @@ export class ConfigsController {
   @Header("Cache-Control", "no-store")
   list(@Req() request: AuthenticatedRequest) {
     return this.configs.list(request.principal.user.id);
+  }
+  @Delete("configs/:id")
+  @HttpCode(204)
+  @Header("Cache-Control", "no-store")
+  async delete(
+    @Req() request: AuthenticatedRequest,
+    @Param("id", new ParseUUIDPipe()) id: string,
+  ): Promise<void> {
+    await this.configs.delete(request.principal.user.id, id);
   }
   @Get("configs/:id")
   @Header("Cache-Control", "no-store")

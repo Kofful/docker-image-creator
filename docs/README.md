@@ -1,10 +1,10 @@
 # Docker Image Creator
 
-Status: Vue/Nest and three-service infrastructure Compose are present, with email/password authentication and MySQL sessions. Configuration creation now queues durable background generation, saves an immutable DB revision and private Compose file, and exposes owner-scoped polling. Vue provides creation/list/detail pages that can wait for multi-minute generation and resume status checks. The provider is a deterministic fake; live LLM integration, Docker runtime validation, the runner, and terminals remain planned. See [configuration API](configuration-api.md) and [local setup](local-setup.md) for exact behavior and verification.
+Status: Vue/Nest and three-service infrastructure Compose are present, with email/password authentication and MySQL sessions. Configuration creation now queues durable background generation, saves an immutable DB revision and private Compose file, and exposes owner-scoped polling. Vue provides creation/list/detail pages that can wait for multi-minute generation, resume status checks, and delete saved configurations with confirmation. The provider is a deterministic fake; live LLM integration, Docker runtime validation, the runner, and terminals remain planned. See [configuration API](configuration-api.md) and [local setup](local-setup.md) for exact behavior and verification.
 
 ## Document map
 
-The [configuration API](configuration-api.md) documents implemented creation, background generation, polling, persistence, and file storage.
+The [configuration API](configuration-api.md) documents implemented creation, background generation, polling, persistence, file storage, and soft deletion with durable artifact cleanup.
 
 For automatic UI/API reloads in Docker, use the [development setup](local-setup.md#develop-in-docker-with-automatic-reload).
 

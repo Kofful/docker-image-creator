@@ -8,6 +8,10 @@ Docker Image Creator produces container environments and checks whether they can
 A saved definition of a container environment containing one or more services.
 _Avoid_: App, stack, when referring to the saved definition
 
+**Deleted configuration**:
+A retired configuration retained as history and unavailable for use.
+_Avoid_: Stopped configuration, which suggests its services can be started again
+
 **Service**:
 One component of a configuration, such as a Python application or a MySQL database.
 _Avoid_: App, when referring to a single component
