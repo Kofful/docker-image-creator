@@ -1,0 +1,3 @@
+# Shared-host execution through a private runner
+
+Run user deployments alongside the application containers on the same Docker host, with a separate bridge network per configuration and Docker access confined to a private runner. We chose this over nesting a Docker daemon inside the backend: nesting does not establish the desired network or host isolation and adds daemon/storage supervision to the API container. Workload access to application infrastructure, other configurations, and the internet must be denied and verified separately; this shared-host decision does not authorize public hostile-tenant hosting.

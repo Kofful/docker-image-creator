@@ -24,6 +24,8 @@ Every resource lookup and mutation is constrained by user ownership, including g
 
 Only the runner accesses Docker. Authenticate and isolate its internal transport; do not publish it or the database to generated workloads. Deny dangerous Compose fields and arbitrary host access by construction. Reject model attempts to invoke execution tools or request secrets. Validate resource requests and dependencies before executing anything. Restrict image sources/tags to the tested catalog; image approval is not a substitute for security maintenance.
 
+The agreed next execution slice uses the shared host, with one network per configuration. Workloads may communicate within that network but must be denied access to other configurations, application infrastructure, host services, and the internet. Image pulls are a runner responsibility and do not grant workload egress. The current compiler's ordinary bridge and optional loopback ports do not yet enforce this policy. Verify denial on the actual daemon before accepting execution readiness; terminal access itself needs no service port publication.
+
 ## Secrets and logging
 
 API keys, database credentials, secret encryption keys, and session material are deployment configuration. Check in examples with placeholders only. Generated database passwords are separate encrypted user secrets. Do not include secret values in prompts, public specs, previews, exports, exceptions, traces, or operation logs. Redact known sensitive values from service logs on a best-effort basis; arbitrary application output may still reveal secrets. Avoid persistent terminal recording. Terminal output is untrusted: avoid unsafe HTML rendering and disable unneeded escape-sequence integrations such as clipboard writes.
@@ -31,6 +33,8 @@ API keys, database credentials, secret encryption keys, and session material are
 ## Resource and failure controls
 
 Set per-user limits on configs, services, running stacks, generation requests, operation concurrency, terminal connections, CPU, memory, PIDs, disk/log retention, and output rates. Limit outbound generation payloads and enforce model budgets. Persist operation leases and reconcile after interruption. Protect runner directories from traversal/symlink attacks and use restrictive permissions. Start failure must not trigger broad cleanup or silent volume deletion.
+
+The implemented runtime admission rule is one reserved configuration per user with no global running-count cap, independent of generation's two-slot queue. Hold the reservation through pending, partial, and unknown state until verified stopped. Per-service limits, deadlines, and bounded worker concurrency remain required. Failed Start stops its attempt's services while preserving data. The accepted future Delete workflow rejects running services, verifies resource ownership, requires separate explicit persistent-data deletion, and stays visible/retryable until verified cleanup completes. The current endpoint slice conservatively blocks artifact-only deletion of all runtime-backed configurations.
 
 ## Required verification
 

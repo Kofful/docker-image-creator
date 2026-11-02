@@ -1,14 +1,34 @@
 # Local setup
 
+The default Compose stack includes web, API, MySQL, and the private runtime runner. Its supported-host runtime smoke gate is separate from API/database checks.
+
+## Private runtime runner
+
+The default `infra/docker-compose.yml` includes the runner as a separate service. It waits for API health, after normal API startup has deployed committed migrations (including `20261102000000_runtime_start`), then consumes queued [runtime operations](runtime-api.md). No extra runner overlay is needed.
+
+The runner requires Linux Docker Engine 28+ with isolated bridge and resource enforcement. It uses the existing explicitly configured `DATABASE_URL` and `CONFIG_ENCRYPTION_KEY`; no new secret variable is introduced. Only the runner receives the local Docker socket. API remains socket-free and generated workloads never join the infrastructure network. For a human operator whose deployment configuration is already prepared:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml up --build -d --wait
+```
+
+For development, combine only the base and development files; the runner is inherited automatically. The runner runs compiled code and needs rebuilding after runtime source changes; the existing API/Vue automatic reload behavior remains unchanged.
+
+Use the same file list for control-plane stop/restart commands. Stopping application infrastructure does not stop user deployments; use the owned Stop endpoint first when that is the intended action.
+
+Source alternative: build API, then run `pnpm --filter @docker-image-creator/runner start` with explicitly exported database/encryption configuration and local socket access. Neither agent checks nor source tooling load protected environment files.
+
+Verify disposable catalog workload startup and data/network behavior on a supported host with `pnpm test:runtime`. The host now reports Engine 28.1.1; the earlier 27.1.2 prerequisite failure is historical. Rebuild the runner to apply the capability-name validation fix described in [runtime API](runtime-api.md#capability-validation-recovery). Do not treat controlled-driver API tests as a successful full runtime smoke check. See the runtime API for endpoint examples, deadlines, reservation rules, and the temporary deletion guard.
+
 ## Current behavior
 
-The stack contains Vue frontend source in `apps/web`, Nest backend source in `apps/api`, shared transport types in `packages/contracts`, and infrastructure configuration in `infra/docker-compose.yml`. Prisma schema and committed MySQL migrations now create users, sessions, and refresh tokens. The [auth API](authentication.md) implements registration/login/refresh_token/me/logout. The web UI provides login, registration, a protected account page, and logout. The health endpoint reports liveness only.
+The stack contains Vue in `apps/web`, Nest API in `apps/api`, the private runner in `apps/runner`, shared contracts, and four-service application infrastructure. MySQL migrations provide authentication, generation/revisions/secrets, deletion bookkeeping, and runtime operations/deployments/reservations. Vue provides authentication and configuration creation/list/detail/deletion; the health endpoint is liveness only. The private runner supplies explicit runtime execution through the [runtime API](runtime-api.md).
 
-Milestone 1's verification gates remain incomplete. Backend and browser portions of milestone 2 are implemented in source; see the verification record below. Generation, stack execution, and terminals remain planned.
+Full production boot and supported-host runtime verification remain incomplete. Authentication, fake generation, saved configuration workflows, the runtime endpoint slice, and configuration-detail Start/Stop/status controls are implemented. Real LLM calls, runtime cleanup, automatic validation trials, and terminals remain planned. Historical checks below are distinguished from the current runtime verification record.
 
-## Start the three services
+## Start the services
 
-Install Docker Engine and Docker Compose v2. Commands below run from the repository root. The development override requires Compose 2.24.4 or later; Compose v2.29.1 is available in the implementation environment.
+Install Docker Engine 28+ with isolated bridge and resource enforcement, and Docker Compose v2. Commands below run from the repository root. The development override requires Compose 2.24.4 or later; Compose v2.29.1 is available in the implementation environment.
 
 As a human operator, create or update `.env` in the repository root using the keys in `.env.example`. Set distinct, nonempty `MYSQL_PASSWORD` and `MYSQL_ROOT_PASSWORD` values. Set `DATABASE_URL` to the application account at `mysql:3306`, URL-encoding username/password components and matching the database/account initialization settings. Set `AUTH_ACCESS_TOKEN_SECRET` to a private random signing key containing at least 32 bytes. Set `CONFIG_ENCRYPTION_KEY` to a separate 32-byte key encoded as 64 hexadecimal characters and retain it across restarts. Set `AUTH_TRUSTED_ORIGINS` to the exact browser origin, including the port; adjust it if `WEB_PORT` changes. The root `.env` is ignored by Git. If it already exists, preserve its other settings. Then start the services:
 
@@ -23,7 +43,7 @@ curl --fail http://127.0.0.1:8080/api/v1/health
 docker compose --env-file .env -f infra/docker-compose.yml ps
 ```
 
-The endpoint returns `{"status":"ok","service":"api"}`. MySQL should report healthy after an authenticated query against the application database. The API container deploys migrations before startup and opens a database connection during Nest initialization. Web, API, and MySQL join the same project-scoped bridge network and resolve each other by service name. Nginx proxies the browser's `/api/` requests to `api:3000`, so no browser-facing API hostname or CORS configuration is required.
+The endpoint returns `{"status":"ok","service":"api"}`. MySQL should report healthy after an authenticated query against the application database. The API container deploys migrations before startup and opens a database connection during Nest initialization. Web, API, MySQL, and runner join the same project-scoped infrastructure bridge network and resolve each other by service name. Only runner mounts the Docker socket, and it publishes no port. Nginx proxies the browser's `/api/` requests to `api:3000`, so no browser-facing API hostname or CORS configuration is required.
 
 Stop the stack while preserving its database:
 
@@ -43,7 +63,7 @@ docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compo
 
 Keep using the same browser address. The default is <http://127.0.0.1:8080>; the example template sets `WEB_PORT=80`, which uses <http://127.0.0.1>. `AUTH_TRUSTED_ORIGINS` must match that address exactly. You do not need to add port 5173 for Docker development: it is the internal Vite port, mapped to your existing web port.
 
-Vue, CSS, and frontend TypeScript edits hot-reload in the browser. API TypeScript edits compile and restart Nest automatically after a successful build. A type error leaves the last valid API running; fix the error to resume reloads. Both services also see shared contracts source changes. No source edit requires a container rebuild or a Compose command.
+Vue, CSS, and frontend TypeScript edits hot-reload in the browser. API TypeScript edits compile and restart Nest automatically after a successful build. A type error leaves the last valid API running; fix the error to resume reloads. Both services also see shared contracts source changes. The inherited runner uses its compiled production image; runtime changes require rebuilding/recreating runner with the same development `up --build -d --wait runner` command.
 
 Follow compiler/server output with:
 
@@ -60,6 +80,7 @@ Frontend, contracts, and configuration mounts are read-only. API source is writa
 | Environment configuration                     | Repeat development `up -d --force-recreate` without `--build`          |
 | Prisma schema or committed migrations         | Restart the API; startup deploys migrations and regenerates the client |
 | Watcher script                                | Restart the API                                                        |
+| Runtime runner source                         | Repeat development `up --build -d --wait runner`                        |
 
 For example, after adding a committed migration:
 
@@ -77,7 +98,7 @@ docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compo
 
 To return to compiled production containers, use the original single-file `up --build` command above. Both modes use the same Compose project and database volume when run from this repository; do not add a different project name when switching modes.
 
-An opt-in smoke check builds the dev image, boots a unique disposable Compose project with test-only settings, verifies Vue HMR and API reload/error recovery, checks authentication origin protection, and removes only its own containers, network, and volumes. It edits temporary source copies, uses a random loopback port, and never loads repository environment files:
+An opt-in smoke check builds the dev image, boots only web/API/MySQL in a unique disposable Compose project with test-only settings, verifies Vue HMR and API reload/error recovery, checks authentication origin protection, and removes only its own containers, network, and volumes. It explicitly selects those services; runner execution has its own runtime smoke gate. It edits temporary source copies, uses a random loopback port, and never loads repository environment files:
 
 ```bash
 corepack pnpm test:dev
@@ -132,7 +153,7 @@ corepack pnpm --filter @docker-image-creator/web dev
 
 Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. API startup now requires MySQL, the auth settings, and the generation encryption key, even if only liveness is used. Keep `http://127.0.0.1:5173` in trusted origins when using Vite.
 
-## Verification record and remaining prerequisites
+## Historical scaffold and authentication verification
 
 The Docker development image built successfully with the frozen lockfile. The disposable `test:dev` harness passed with native watching and with `DEV_WATCH_POLLING=true`: three-service boot, migrations, Vite API proxy, Vue HMR and changed served content, API recompile/restart, continued service during a type error and recovery after correction, trusted/untrusted registration origins, unchanged container IDs, and graceful API watcher shutdown. Tests used unique project-scoped resources and temporary source copies; cleanup removed their containers, network, and volumes. The application stack and protected environment files were not accessed. API/contracts/web type checks, workspace ESLint plus the smoke script, changed-file formatting, and all 28 frontend tests also passed for this change. This verifies the development deployment; production image boot and runner scaffolding remain separate gates.
 
@@ -182,4 +203,14 @@ The authenticated `DELETE /api/v1/configs/:id` endpoint now soft-deletes databas
 
 The subsequent UI change adds Delete buttons to `/configs` and `/configs/:id`, with a browser confirmation, pending-request protection, and an explanation while generation prevents deletion. List deletion removes the selected row; detail deletion returns to the list. Use **Refresh configurations** on the list to update generation status. Already-removed configurations disappear on a 404; rejected or unconfirmed deletions remain visible with a retryable error. No additional setup is required.
 
+The runtime UI follow-up adds a single Start/Stop button to the left of Delete on `/configs/:id` and a lifecycle status label replacing Generation. The default Compose stack includes the private runner needed to execute actions on a supported host. Starting/Stopping disable the action; stopped configurations can Start again, while failed/unknown deployments offer Stop for recovery. Runtime-backed configurations cannot be deleted until runtime cleanup is implemented, including after Stop. The UI polls deployment and operation status, retains errors, and retries status checks after transient failures; an unconfirmed action requires an explicit retry with the same request key.
+
+Runtime UI verification: `pnpm test:web` passed all 69 tests, including 20 runtime checks using the real views/router/session client with mocked HTTP. `pnpm --filter @docker-image-creator/web build`, `pnpm typecheck`, and `pnpm lint` passed. Explicit formatting checks cover changed UI files and runtime documentation. Vite/Vitest disable environment-file loading, and the type-check configuration uses a non-secret placeholder database URL without connecting. No new real Docker or database integration run was performed for this frontend follow-up; the existing supported-host limitation below still applies.
+
 UI verification: all 49 frontend tests passed, including deletion from both pages, confirmation cancellation, pending requests, queued/running/failed generation, stale 404s, error/retry behavior, and an overlapping list refresh. Workspace type checking, lint, the production web build, and changed-file formatting passed. The backend suite was not rerun for the UI-only follow-up; no interactive browser or Docker workload check was performed.
+
+### Runtime endpoint verification (2026-11-02)
+
+All 74 backend checks passed against disposable MySQL 8.4.11 with all four migrations applied twice. New coverage includes ownership/session/origin checks, concurrent idempotency, one configuration per user without a global count cap, cross-user port reservation races, concurrent runner claims, queue/lease expiry, rollback and unknown-state slot retention, Stop/Start manifest stability, tampered revisions, and driver refusal of conflicting labels/mounts/privileges/networks/limits. Routine lifecycle tests use a controlled driver; the actual Docker 27.1.2 gate rejects execution before any user resource is created.
+
+Workspace type checking and ESLint passed. Explicit formatting checks for changed code/package files, the new runtime documentation/ADR and glossary passed, as did whitespace checks. Production and development runner Compose merges passed `config --quiet` with explicit non-secret configuration and `/dev/null` as the environment file. The runner image built with the frozen lockfile, and its isolated/no-socket CLI check reported Compose v2.40.3. The supported-host smoke script stopped at the Engine 28+ prerequisite on this Engine 27.1.2 host; real workload startup/readiness, loopback reachability, network denial, and physical database retention remain unverified. No host upgrade, protected environment-file access, live LLM call, runtime UI, or terminal implementation was performed.

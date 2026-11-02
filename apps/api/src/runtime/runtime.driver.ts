@@ -1,0 +1,404 @@
+import { Injectable } from "@nestjs/common";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ConfigServiceInput } from "@docker-image-creator/contracts";
+import { CATALOG } from "../configs/compose.compiler";
+import { runtimeLabels } from "./runtime.manifest";
+
+export class RuntimeFailure extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+export interface RuntimeTarget {
+  userId: string;
+  configId: string;
+  revisionId: string;
+  services: ConfigServiceInput[];
+  manifest: string;
+  secrets: Record<string, string>;
+}
+export interface RuntimeObservation {
+  running: boolean;
+  ready: boolean;
+}
+export abstract class RuntimeDriver {
+  abstract start(target: RuntimeTarget, signal: AbortSignal): Promise<void>;
+  abstract remove(target: RuntimeTarget, signal: AbortSignal): Promise<void>;
+  abstract stop(target: RuntimeTarget, signal: AbortSignal): Promise<void>;
+  abstract observe(
+    target: RuntimeTarget,
+    signal: AbortSignal,
+  ): Promise<RuntimeObservation>;
+}
+interface Container {
+  Id: string;
+  Config: { Image: string; Labels: Record<string, string> };
+  State: { Running: boolean; Restarting: boolean; Health?: { Status: string } };
+  NetworkSettings: {
+    Networks: Record<string, unknown>;
+    Ports: Record<string, { HostIp: string; HostPort: string }[] | null>;
+  };
+  HostConfig: {
+    Privileged: boolean;
+    NetworkMode: string;
+    Memory: number;
+    NanoCpus: number;
+    PidsLimit: number;
+    CapDrop?: string[];
+    RestartPolicy: { Name: string };
+  };
+  Mounts: { Type: string; Name?: string; Destination: string }[];
+}
+
+// This provider is registered only by the runner bootstrap, never by the API.
+@Injectable()
+export class DockerRuntimeDriver extends RuntimeDriver {
+  protected async command(
+    args: string[],
+    signal: AbortSignal,
+    input?: string,
+    secrets: Record<string, string> = {},
+    ms = 15000,
+  ): Promise<string> {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const child = spawn("docker", args, {
+        // No inherited tokens, Docker contexts, Compose overrides, or env-file loading.
+        env: {
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          DOCKER_HOST: "unix:///var/run/docker.sock",
+          ...secrets,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        // The Docker CLI launches Compose as a child. Kill the entire command group.
+        detached: true,
+      });
+      let output = "";
+      let failed = false;
+      const abort = () => {
+        failed = true;
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch {
+          /* The command group already exited. */
+        }
+      };
+      const timer = setTimeout(abort, ms);
+      signal.addEventListener("abort", abort, { once: true });
+      child.stdout.on("data", (data: Buffer) => {
+        if (Buffer.byteLength(output) + data.length > 1024 * 1024) abort();
+        else output += data.toString("utf8");
+      });
+      // Compose errors and inspect output may contain secrets. Never retain stderr.
+      child.stderr.resume();
+      child.stdin.on("error", () => undefined);
+      child.once("error", () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        reject(new RuntimeFailure("DOCKER_UNAVAILABLE"));
+      });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        if (code === 0 && !failed && !signal.aborted) resolve(output.trim());
+        else reject(new RuntimeFailure("DOCKER_UNAVAILABLE"));
+      });
+      child.stdin.end(input);
+    });
+  }
+  private owned(
+    labels: Record<string, string> | undefined,
+    target: RuntimeTarget,
+  ): void {
+    for (const [key, value] of Object.entries(
+      runtimeLabels(target.userId, target.configId),
+    ))
+      if (labels?.[key] !== value)
+        throw new RuntimeFailure("RESOURCE_CONFLICT");
+  }
+  private project(target: RuntimeTarget): string {
+    for (const id of [target.userId, target.configId, target.revisionId])
+      if (!/^[a-f0-9-]{36}$/i.test(id))
+        throw new RuntimeFailure("INVALID_REVISION");
+    return `dic-${target.configId}`;
+  }
+  private async containers(
+    target: RuntimeTarget,
+    signal: AbortSignal,
+  ): Promise<Container[]> {
+    const project = this.project(target);
+    const ids = (
+      await this.command(
+        [
+          "ps",
+          "--all",
+          "--quiet",
+          "--no-trunc",
+          "--filter",
+          `label=com.docker.compose.project=${project}`,
+        ],
+        signal,
+      )
+    )
+      .split(/\s+/)
+      .filter(Boolean);
+    if (
+      ids.length > target.services.length ||
+      ids.some((id) => !/^[a-f0-9]{64}$/.test(id))
+    )
+      throw new RuntimeFailure("RESOURCE_CONFLICT");
+    if (!ids.length) return [];
+    const rows = JSON.parse(
+      await this.command(["inspect", ...ids], signal),
+    ) as Container[];
+    const names = new Set<string>();
+    for (const row of rows) {
+      this.owned(row.Config.Labels, target);
+      const name = row.Config.Labels["com.docker.compose.service"];
+      const service = target.services.find((item) => item.name === name);
+      if (
+        !service ||
+        names.has(service.name) ||
+        row.Config.Image !== CATALOG[service.image].image ||
+        row.Config.Labels["docker-image-creator.revision"] !==
+          target.revisionId ||
+        row.HostConfig.Privileged ||
+        row.HostConfig.NetworkMode !== `${project}_stack` ||
+        row.HostConfig.Memory !== 512 * 1024 * 1024 ||
+        row.HostConfig.NanoCpus !== 500000000 ||
+        row.HostConfig.PidsLimit !== 128 ||
+        row.HostConfig.RestartPolicy.Name !== "no" ||
+        // Engine inspect may return the canonical CAP_ prefix.
+        !row.HostConfig.CapDrop?.some(
+          (capability) =>
+            capability === "NET_RAW" || capability === "CAP_NET_RAW",
+        ) ||
+        (row.State.Running &&
+          Object.keys(row.NetworkSettings.Networks).length !== 1) ||
+        Object.keys(row.NetworkSettings.Networks).some(
+          (network) => network !== `${project}_stack`,
+        )
+      )
+        throw new RuntimeFailure("RESOURCE_CONFLICT");
+      if (row.State.Running) {
+        const mappings = Object.values(row.NetworkSettings.Ports).flatMap(
+          (value) => value ?? [],
+        );
+        const expected = service.hostPort === undefined ? 0 : 1;
+        if (
+          mappings.length !== expected ||
+          (expected &&
+            !row.NetworkSettings.Ports[
+              `${CATALOG[service.image].port}/tcp`
+            ]?.some(
+              (mapping) =>
+                mapping.HostIp === "127.0.0.1" &&
+                mapping.HostPort === String(service.hostPort),
+            ))
+        )
+          throw new RuntimeFailure("RESOURCE_CONFLICT");
+      }
+      names.add(service.name);
+      const database = service.image === "mysql" || service.image === "mongodb";
+      const mounts = row.Mounts;
+      const expected =
+        service.image === "mongodb"
+          ? {
+              [`${project}_${service.name}-data`]: "/data/db",
+              [`${project}_${service.name}-configdb`]: "/data/configdb",
+            }
+          : { [`${project}_${service.name}-data`]: "/var/lib/mysql" };
+      if (
+        mounts.length !==
+          (service.image === "mongodb" ? 2 : database ? 1 : 0) ||
+        mounts.some(
+          (mount) =>
+            mount.Type !== "volume" ||
+            !mount.Name ||
+            expected[mount.Name] !== mount.Destination,
+        )
+      )
+        throw new RuntimeFailure("RESOURCE_CONFLICT");
+    }
+    return rows;
+  }
+  private async network(
+    target: RuntimeTarget,
+    signal: AbortSignal,
+    allowedContainers?: Set<string>,
+  ): Promise<string | undefined> {
+    const name = `${this.project(target)}_stack`;
+    const id = await this.command(
+      ["network", "ls", "--quiet", "--no-trunc", "--filter", `name=^${name}$`],
+      signal,
+    );
+    if (!id) return;
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new RuntimeFailure("RESOURCE_CONFLICT");
+    const rows = JSON.parse(
+      await this.command(["network", "inspect", id], signal),
+    ) as {
+      Containers?: Record<string, unknown>;
+      Internal: boolean;
+      Driver: string;
+      EnableIPv6: boolean;
+      Labels: Record<string, string>;
+      Options: Record<string, string>;
+    }[];
+    if (
+      rows.length !== 1 ||
+      !rows[0]!.Internal ||
+      rows[0]!.Driver !== "bridge" ||
+      rows[0]!.EnableIPv6 ||
+      rows[0]!.Options["com.docker.network.bridge.gateway_mode_ipv4"] !==
+        "isolated"
+    )
+      throw new RuntimeFailure("RESOURCE_CONFLICT");
+    this.owned(rows[0]!.Labels, target);
+    if (allowedContainers && (!rows[0]!.Containers || Object.keys(rows[0]!.Containers).some(id => !allowedContainers.has(id))))
+      throw new RuntimeFailure("RESOURCE_CONFLICT");
+    return id;
+  }
+  async remove(target: RuntimeTarget, signal: AbortSignal): Promise<void> {
+    const rows = await this.containers(target, signal);
+    if (rows.some(row => row.State.Running || row.State.Restarting))
+      throw new RuntimeFailure("DELETE_FAILED");
+    await this.network(target, signal, new Set(rows.map(row => row.Id)));
+    // No force or volume flags: Docker refuses a container that started since inspection.
+    for (const row of rows) await this.command(["rm", row.Id], signal);
+    const network = await this.network(target, signal, new Set());
+    if (network) await this.command(["network", "rm", network], signal);
+    if ((await this.containers(target, signal)).length || await this.network(target, signal))
+      throw new RuntimeFailure("DELETE_FAILED");
+  }
+  async observe(
+    target: RuntimeTarget,
+    signal: AbortSignal,
+  ): Promise<RuntimeObservation> {
+    const rows = await this.containers(target, signal);
+    await this.network(target, signal);
+    return {
+      running: rows.some((row) => row.State.Running || row.State.Restarting),
+      ready:
+        rows.length === target.services.length &&
+        rows.every(
+          (row) => row.State.Running && row.State.Health?.Status === "healthy",
+        ),
+    };
+  }
+  async start(target: RuntimeTarget, signal: AbortSignal): Promise<void> {
+    const project = this.project(target);
+    const info = JSON.parse(
+      await this.command(["info", "--format", "{{json .}}"], signal),
+    ) as {
+      ServerVersion: string;
+      OSType: string;
+      MemoryLimit: boolean;
+      PidsLimit: boolean;
+      CpuCfsQuota: boolean;
+    };
+    if (
+      !/^\d+\./.test(info.ServerVersion) ||
+      Number(info.ServerVersion.split(".")[0]) < 28 ||
+      info.OSType !== "linux" ||
+      !info.MemoryLimit ||
+      !info.PidsLimit ||
+      !info.CpuCfsQuota
+    )
+      throw new RuntimeFailure("UNSUPPORTED_DOCKER");
+    const existing = await this.containers(target, signal);
+    if (existing.some((row) => row.State.Running || row.State.Restarting))
+      throw new RuntimeFailure("RESOURCE_CONFLICT");
+    await this.network(target, signal);
+    for (const service of target.services) {
+      if (
+        service.hostPort !== undefined &&
+        (await this.command(
+          ["ps", "--quiet", "--filter", `publish=${service.hostPort}`],
+          signal,
+        ))
+      )
+        throw new RuntimeFailure("RESOURCE_CONFLICT");
+      if (service.image !== "mysql" && service.image !== "mongodb") continue;
+      for (const suffix of service.image === "mongodb"
+        ? ["data", "configdb"]
+        : ["data"]) {
+        const name = `${project}_${service.name}-${suffix}`;
+        const found = await this.command(
+          ["volume", "ls", "--quiet", "--filter", `name=^${name}$`],
+          signal,
+        );
+        if (found) {
+          const rows = JSON.parse(
+            await this.command(["volume", "inspect", name], signal),
+          ) as { Labels: Record<string, string> }[];
+          this.owned(rows[0]?.Labels, target);
+        }
+      }
+    }
+    // Empty private project directory and explicit null env-file prevent implicit repo reads.
+    const directory = await mkdtemp(join(tmpdir(), "dic-runner-"));
+    try {
+      const base = [
+        "compose",
+        "--env-file",
+        "/dev/null",
+        "--project-directory",
+        directory,
+        "--project-name",
+        project,
+        "--file",
+        "-",
+      ];
+      await this.command(
+        [...base, "pull", "--quiet"],
+        signal,
+        target.manifest,
+        target.secrets,
+        5 * 60000,
+      ).catch(() => {
+        throw new RuntimeFailure("IMAGE_PULL_FAILED");
+      });
+      await this.command(
+        [
+          ...base,
+          "up",
+          "--detach",
+          "--no-build",
+          "--pull",
+          "never",
+          "--wait",
+          "--wait-timeout",
+          "120",
+        ],
+        signal,
+        target.manifest,
+        target.secrets,
+        150000,
+      ).catch(() => {
+        throw new RuntimeFailure("START_FAILED");
+      });
+      if (!(await this.observe(target, signal)).ready)
+        throw new RuntimeFailure("START_FAILED");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+  async stop(target: RuntimeTarget, signal: AbortSignal): Promise<void> {
+    const rows = await this.containers(target, signal);
+    for (const row of rows)
+      if (row.State.Running || row.State.Restarting)
+        await this.command(
+          ["stop", "--time", "30", row.Id],
+          signal,
+          undefined,
+          {},
+          35000,
+        );
+    if ((await this.observe(target, signal)).running)
+      throw new RuntimeFailure("STOP_FAILED");
+  }
+}

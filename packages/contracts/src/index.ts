@@ -67,6 +67,7 @@ export interface ConfigResponse {
   description: string;
   services: ConfigServiceInput[];
   generation: GenerationResponse;
+  deletion?: RuntimeOperationResponse | null;
   revision: {
     id: string;
     version: number;
@@ -74,4 +75,33 @@ export interface ConfigResponse {
     digest: string;
     artifactPath: string;
   } | null;
+}
+
+export interface StartConfigRequest {
+  revisionId: string;
+}
+export type RuntimeStatus = "queued" | "running" | "succeeded" | "failed";
+export interface RuntimeOperationResponse {
+  id: string;
+  configId: string;
+  revisionId: string;
+  type: "start" | "stop" | "delete";
+  status: RuntimeStatus;
+  stage: string;
+  error: { code: string; message: string } | null;
+  cleanupPending: boolean;
+  createdAt: string;
+  completedAt: string | null;
+}
+export interface RuntimeAcceptedResponse {
+  operationId: string;
+  statusUrl: string;
+  pollAfterMs: number;
+}
+export interface DeploymentResponse {
+  configId: string;
+  revisionId: string;
+  state: "starting" | "running" | "stopping" | "stopped" | "failed" | "unknown";
+  operationId: string;
+  observedAt: string | null;
 }

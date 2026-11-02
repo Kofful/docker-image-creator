@@ -43,7 +43,11 @@ describe("configuration views", () => {
   const fetchMock = vi.fn<typeof fetch>();
   let wrapper: VueWrapper | undefined;
   beforeEach(() => {
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", (path: RequestInfo | URL, init?: RequestInit) =>
+      typeof path === "string" && path.endsWith("/deployment")
+        ? Promise.resolve(json({}, 404))
+        : fetchMock(path, init),
+    );
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(json(tokens()));
   });

@@ -20,6 +20,14 @@ _Avoid_: App, when referring to a single component
 An instance of a configuration maintained for use beyond a temporary validation run.
 _Avoid_: Validation run
 
+**Runtime operation**:
+One request to start or stop a configuration and the outcome of that request.
+_Avoid_: Generation attempt, which produces a definition rather than changing a deployment's running state
+
+**Terminal session**:
+One interactive connection by a user to a running service for issuing commands, including commands to administer that service's database.
+_Avoid_: SSH connection, when referring to the product's interactive terminal
+
 **Generated bundle**:
 The generated definition of a requested container environment, including the settings and starter behavior needed by its services.
 _Avoid_: Config, when referring to the whole bundle

@@ -1,0 +1,11 @@
+{
+  "name": "@docker-image-creator/runner",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node ../api/dist/runtime/runner.main.js"
+  },
+  "dependencies": {
+    "@docker-image-creator/api": "workspace:*"
+  }
+}

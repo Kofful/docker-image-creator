@@ -2,13 +2,13 @@
 
 ## Implemented scaffold
 
-`infra/docker-compose.yml` builds `docker-image-creator-web:local` from `apps/web/Dockerfile` and `docker-image-creator-api:local` from `apps/api/Dockerfile`, and runs `mysql:8.4.11`. All three join the Compose project-scoped `infrastructure` bridge network. MySQL stores data in the project-scoped `mysql-data` named volume. Neither API nor MySQL publishes a host port. Web publishes port 8080 on loopback by default.
+`infra/docker-compose.yml` builds `docker-image-creator-web:local` from `apps/web/Dockerfile`, `docker-image-creator-api:local` from `apps/api/Dockerfile`, and `docker-image-creator-runner:local` from `apps/runner/Dockerfile`, and runs `mysql:8.4.11`. All four join the Compose project-scoped `infrastructure` bridge network. MySQL stores data in the project-scoped `mysql-data` named volume. API, MySQL, and runner publish no host ports. Web publishes port 8080 on loopback by default.
 
 Deployment configuration comes from the repository root `.env`, explicitly selected by the human operator with `docker compose --env-file .env -f infra/docker-compose.yml`. Only declared MySQL variables are passed into MySQL. API configuration now includes `DATABASE_URL`, `AUTH_ACCESS_TOKEN_SECRET`, and `AUTH_TRUSTED_ORIGINS`. Use the root `.env.example` as the secret-free configuration template. API code, Prisma configuration, and agent checks do not load environment files; source development uses exported process variables.
 
 The Vue 3/Vite application uses strict TypeScript and `<script setup lang="ts">`. Its built assets are served by Nginx, which proxies `/api/` to `api:3000`. Nest exposes liveness and the [authentication endpoints](authentication.md), with shared transport interfaces in `packages/contracts`. Liveness itself does not query the database, but API startup now requires a database connection. Compose waits for an authenticated MySQL `SELECT 1` before starting API, then for API health before starting web, using [Compose health dependencies](https://docs.docker.com/compose/how-tos/startup-order/). The API container applies committed Prisma migrations before starting Nest.
 
-Build stages use `node:22.23.4-bookworm-slim` and pnpm 10.34.9. The frontend runtime uses `nginx:1.28.0-alpine`; the API runtime runs as the `node` user. No service mounts the Docker socket. Build contexts allowlist source/config inputs and exclude environment files, dependencies, and runtime artifacts.
+Build stages use `node:22.23.4-bookworm-slim` and pnpm 10.34.9. The frontend runtime uses `nginx:1.28.0-alpine`; the API runtime runs as the `node` user. Only the private runner mounts the Docker socket. Build contexts allowlist source/config inputs and exclude environment files, dependencies, and runtime artifacts.
 
 The API image additionally includes OpenSSL for Prisma migration tooling, the schema/migrations, and its Prisma configuration. Prisma CLI remains in the image for startup migrations. Build-time client generation uses a placeholder URL and never requires production credentials. The generated CommonJS client is compiled into the API output and is not tracked in Git.
 
@@ -36,7 +36,21 @@ Configuration deletion (2026-11-01) is an owner-scoped API operation that retain
 
 The API never accesses Docker. A current `succeeded` job means generation and file/DB persistence succeeded, explicitly accompanied by `provider: fake` and `runtimeValidation: not_performed`. Only the future private runner may pull/start containers, check readiness, observe for ten seconds, stop trials, reconcile Docker resources, or manage lasting deployments. Database readiness probes, actual image startup verification, and secret injection remain runner prerequisites.
 
+## Implemented execution endpoint slice (2026-11-02)
+
+The [runtime API](runtime-api.md) implements owner-scoped Start/Stop, durable operation polling, and deployment state. Start requires an explicit saved revision and UUID idempotency key. User-row locking and unique reservations enforce one running configuration per user with no global running count quota; starting, stopping, partial, and unknown state retain the slot until all services are verified stopped. Ports are reserved transactionally. Failed Start rolls back its own services without deleting data. Runtime-backed configurations reject the old artifact-only DELETE until the accepted cleanup workflow is implemented.
+
+The separate Nest runner claims MySQL operations, validates saved specs again, compiles a stricter isolated runtime manifest, privately supplies encrypted secrets, pulls images, waits for authenticated readiness, and reconciles scoped Docker state without automatically restarting workloads. Its bootstrap shares the API build's compiler/Prisma code but is not imported by `AppModule`; `apps/runner` provides its package command and dedicated image. The default Compose file gives only this service the local daemon socket and starts it after API health/migrations. It exposes no HTTP service; private terminal transport is future work.
+
+The default-runner follow-up moves the runner service from a separate opt-in overlay into `infra/docker-compose.yml`, removing the overlay. Ordinary production and development startup now include the queue consumer, so Start/Stop no longer require an extra Compose file. The development override still changes only web/API; runner uses its compiled image and must be rebuilt after runtime source changes. The live-reload smoke harness explicitly starts web/API/MySQL, keeping runtime execution in its separately verified smoke gate. Docker Engine 28+ remains required; moving the service does not change execution policy or upgrade the host.
+
+Engine 28+ and working resource enforcement are execution prerequisites. The earlier Engine 27.1.2 prerequisite failure is historical; the host now reports 28.1.1. Inspect validation accepts either `NET_RAW` or Docker's canonical `CAP_NET_RAW` for the required dropped capability. A read-only live comparison verified this fix against healthy containers previously rejected with `RESOURCE_CONFLICT`; the deployed runner still requires rebuilding. API/controlled-driver integration and runner image verification are distinct from successful supported-host Docker smoke checks; the latter remain pending. This endpoint slice does not complete milestone 5 or add automatic trials, runtime cleanup, or terminals.
+
+The configuration-detail UI follow-up adds a runtime client using the existing shared transport contracts and a Vue composable for deployment/operation polling, cancellation, and explicit Start/Stop submission. One action appears to the left of Delete, with disabled Starting/Stopping states, and a lifecycle label replaces the Generation line. Runtime status is fetched on page load and after explicit actions; polling follows pending operations or starting/stopping deployments, then stops when settled. Unconfirmed action responses and transient status failures keep recovery checks active with backoff and a manual retry. External changes after polling stops require a page reload or explicit action. Operation errors remain separate from observed deployment state. Lost action responses retain their idempotency key for an explicit retry, while confirmed terminal attempts get new keys. The detail page blocks deletion until runtime absence is known and whenever a deployment exists pending runtime cleanup; deletion in flight blocks Start/Stop. The API remains authoritative for ownership, concurrent operations, admission, and deletion policy.
+
 ## Target stack
+
+The [2026-11-01 decision](adr/0003-shared-host-execution.md) retains a private runner and user containers alongside application containers on the same host. The endpoint/runner slice above implements this arrangement subject to the supported-host verification gate; later runtime workflows remain planned.
 
 - Backend: NestJS with strict TypeScript, validation, REST endpoints, and an authenticated terminal gateway.
 - Frontend: Vue 3, Vite, Vue Router, Pinia for session/application state, and xterm.js for terminal display.
@@ -51,14 +65,14 @@ The API never accesses Docker. A current `succeeded` job means generation and fi
 apps/
   api/                 # auth, catalog, configs, generation, operations, terminal gateway
   web/                 # Vue pages, UI components, API client, terminal adapter
-  runner/              # planned; not scaffolded/deployed in the three-service setup
+  runner/              # private runner package/image; default Compose service
 packages/
   contracts/           # versioned schemas, API types, operation/terminal events
 infra/                 # application Compose files and development infrastructure
 docs/                  # planning and subsequent operational documentation
 ```
 
-`apps/api`, `apps/web`, `packages/contracts`, and `infra` now exist. Runner scaffolding remains part of milestone 1; no execution worker is active.
+`apps/api`, `apps/web`, `apps/runner`, `packages/contracts`, and `infra` exist. The default Compose stack includes web, API, MySQL, and runner. The execution worker remains a separate process; the API process never registers it.
 
 ## Request and execution flow
 
@@ -68,7 +82,7 @@ The runner receives internal IDs, then loads validated revision data. It must no
 
 ## Infrastructure separation
 
-The application's API, database, and private runner transport use an infrastructure network. Generated services join only their own Compose project's network. Do not attach generated workloads to the infrastructure network. Limit published ports to explicitly requested loopback mappings. Running the control plane in containers requires a deliberate runner/socket arrangement; mounting the host socket grants powerful host access even inside a container.
+The application's API, database, and private runner transport use an infrastructure network. Generated services join only their own configuration's project-scoped bridge network. The agreed execution policy denies workload access to other configurations, application infrastructure, and the internet; services within a configuration may communicate. Terminal access uses Docker exec and requires no published service ports. The existing compiler still emits ordinary bridges and optional loopback ports: adapting saved configurations to the execution policy and verifying host/gateway denial remain execution prerequisites. Only the private runner may access the host Docker daemon; daemon access remains privileged even inside a container.
 
 ## State and durability
 
@@ -80,6 +94,22 @@ Only one mutating operation per stack may execute at a time. Leases, operation a
 
 The separate runner, durable MySQL operations, immutable revisions, and structured generation contract are planned defaults. Resolve LLM provider/model, specific image tags, terminal/Engine client libraries, resource caps, and secret-key provisioning during their implementation milestone. Public hosting requires a separate execution isolation design.
 
+### Execution design discussion (2026-11-01)
+
+The user chose generated containers alongside the application containers, with one private network per configuration, superseding the earlier literal-nesting request. [ADR 0003](adr/0003-shared-host-execution.md) records the shared-host/private-runner decision. Docker access stays exclusive to the runner; the API authenticates requests and relays authorized traffic. Network isolation must be tested separately from Docker ownership checks.
+
+Generated services may communicate within their configuration but must not reach the internet, other configurations, or application infrastructure. The runner may fetch approved images separately from workload networking. Honor explicitly requested loopback port mappings after checking conflicts; terminal access adds no published ports. No nested daemon or per-user VM is planned for this slice. The agreed audience is trusted accounts on a dedicated local Docker host. Public, mutually untrusted hosting would require a separate isolation design and is outside this milestone.
+
+The agreed connection experience is a UI button opening an interactive shell in the user's running service. For generated MySQL, users administer the database with the `mysql` command-line client inside that container. Actual SSH client compatibility and a browser database GUI are not required. Multiple users must be able to use independently authorized terminal sessions simultaneously. Credential delivery, session limits, and reconnect behavior belong to the subsequent console milestone and remain to be settled.
+
+Start on an existing saved configuration launches a lasting deployment; it does not stop automatically after a trial. Explicit Stop preserves database data for the next Start. A failed Start stops services launched by that attempt, preserves volumes/files, and retains bounded diagnostics with cleanup failures reported separately. API/runner restarts leave running workloads alone. Unexpected service exits or a host reboot require an explicit Start; reconciliation reports actual state rather than automatically relaunching services.
+
+Allow one running configuration per user, with no global running-configuration count limit. Existing per-service CPU/memory/PID/log limits remain; this does not remove bounded worker concurrency or deadlines. Concurrent admissions must not start two configurations. Starting, stopping, partial running state, and unknown state retain the reservation until all services are verified stopped.
+
+The accepted deletion workflow blocks running services, then removes stopped containers/networks/files, with a separate explicit Delete persistent data action for database volumes. Cleanup remains visible and retryable until resource absence is verified; only then is saved-configuration quota released. Database history remains retained. This workflow is not implemented by the Start endpoint slice; its temporary guard rejects artifact-only deletion of any runtime-backed configuration.
+
+Execution with deterministic generation precedes console, then real LLM integration. Automatic temporary validation remains a separate later slice. The endpoint slice recompiles older saved specs into runtime manifests without changing immutable revisions. Configuration-detail runtime UI is implemented; supported-host verification and agreed runtime cleanup remain unfinished; see the [implementation plan](implementation-plan.md).
+
 ### Auth decision: access and refresh tokens (2026-10-30)
 
 The requested API uses bearer access JWTs plus opaque refresh tokens instead of the original cookie-session plan. Access tokens last 15 minutes; sessions have an absolute seven-day lifetime. MySQL session checks make logout/replay revocation immediate. Refresh-token consumption and replacement occur in one transaction; replay revocation commits before returning 401. Simultaneous refresh requests intentionally revoke the session, so clients must serialize refreshes.
@@ -90,7 +120,7 @@ Prisma 7.10.0 uses the maintained MySQL/MariaDB driver adapter and the [`prisma-
 
 ### Browser authentication (2026-10-30)
 
-Vue Router exposes `/login`, `/register`, and the protected `/account` landing page. Root and unknown URLs resolve to the account page for signed-in users and login for guests. Configuration creation/list/detail routes are implemented with background status polling; runtime controls remain planned. Pinia exposes the current user and authentication actions; tokens stay in a private session-client closure, outside Pinia's serializable state and browser storage. Reloading or closing a page requires a new login. Reloading does not revoke the server session; explicit logout calls the API to revoke it.
+Vue Router exposes `/login`, `/register`, and the protected `/account` landing page. Root and unknown URLs resolve to the account page for signed-in users and login for guests. Configuration creation/list/detail routes are implemented with background status polling; the detail page also provides Start/Stop and a runtime status label. Pinia exposes the current user and authentication actions; tokens stay in a private session-client closure, outside Pinia's serializable state and browser storage. Reloading or closing a page requires a new login. Reloading does not revoke the server session; explicit logout calls the API to revoke it.
 
 The client uses same-origin `/api/v1/auth` requests with cookies omitted, no-store caching, and ten-second request deadlines. It checks `/me` on account entry, refreshes before requests within five seconds of access expiry or after a 401, shares one in-flight refresh, and retries a protected request at most once. A delayed 401 for an old access token reuses the already-rotated token. Failed or lost refresh responses clear local credentials rather than replaying a potentially consumed refresh token. Generation checks prevent late responses from restoring a logged-out session. Retryable logout failures keep the logout control available until revocation can be confirmed. Revocation is detected on API use; there is no background polling or terminal transport yet.
 

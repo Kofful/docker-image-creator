@@ -10,13 +10,15 @@ datasource db {
 }
 
 model User {
-  id             String          @id @db.Char(36)
-  email          String          @unique @db.VarChar(254)
-  passwordHash   String          @map("password_hash") @db.VarChar(255)
-  createdAt      DateTime        @default(now()) @map("created_at") @db.DateTime(3)
-  updatedAt      DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
-  sessions       Session[]
-  configurations Configuration[]
+  id                 String              @id @db.Char(36)
+  email              String              @unique @db.VarChar(254)
+  passwordHash       String              @map("password_hash") @db.VarChar(255)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
+  sessions           Session[]
+  configurations     Configuration[]
+  runtimeOperations  RuntimeOperation[]
+  runtimeReservation RuntimeReservation?
 
   @@map("users")
 }
@@ -54,20 +56,25 @@ enum GenerationStatus {
 }
 
 model Configuration {
-  id             String              @id @db.Char(36)
-  userId         String              @map("user_id") @db.Char(36)
-  name           String              @db.VarChar(80)
-  description    String              @db.VarChar(500)
-  services       Json
-  requestKey     String              @map("request_key") @db.Char(36)
-  inputDigest    String              @map("input_digest") @db.Char(64)
-  createdAt      DateTime            @default(now()) @map("created_at") @db.DateTime(3)
-  deletedAt      DateTime?           @map("deleted_at") @db.DateTime(3)
-  cleanupPending Boolean             @default(false) @map("cleanup_pending")
-  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  generations    GenerationAttempt[]
-  revisions      ConfigRevision[]
-  secrets        ConfigSecret[]
+  id                 String              @id @db.Char(36)
+  userId             String              @map("user_id") @db.Char(36)
+  name               String              @db.VarChar(80)
+  description        String              @db.VarChar(500)
+  services           Json
+  requestKey         String              @map("request_key") @db.Char(36)
+  inputDigest        String              @map("input_digest") @db.Char(64)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  deletionRequestedAt DateTime?           @map("deletion_requested_at") @db.DateTime(3)
+  deletedAt          DateTime?           @map("deleted_at") @db.DateTime(3)
+  cleanupPending     Boolean             @default(false) @map("cleanup_pending")
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  generations        GenerationAttempt[]
+  revisions          ConfigRevision[]
+  secrets            ConfigSecret[]
+  deployment         Deployment?
+  runtimeOperations  RuntimeOperation[]
+  runtimeReservation RuntimeReservation?
+  runtimePorts       RuntimePort[]
 
   @@unique([userId, requestKey])
   @@index([userId, deletedAt, createdAt])
@@ -100,17 +107,19 @@ model GenerationAttempt {
 }
 
 model ConfigRevision {
-  id           String            @id @db.Char(36)
-  configId     String            @map("config_id") @db.Char(36)
-  generationId String            @unique @map("generation_id") @db.Char(36)
-  version      Int
-  spec         Json
-  compose      String            @db.MediumText
-  digest       String            @db.Char(64)
-  artifactPath String            @map("artifact_path") @db.VarChar(255)
-  createdAt    DateTime          @default(now()) @map("created_at") @db.DateTime(3)
-  config       Configuration     @relation(fields: [configId], references: [id], onDelete: Cascade)
-  generation   GenerationAttempt @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  id                String             @id @db.Char(36)
+  configId          String             @map("config_id") @db.Char(36)
+  generationId      String             @unique @map("generation_id") @db.Char(36)
+  version           Int
+  spec              Json
+  compose           String             @db.MediumText
+  digest            String             @db.Char(64)
+  artifactPath      String             @map("artifact_path") @db.VarChar(255)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  config            Configuration      @relation(fields: [configId], references: [id], onDelete: Cascade)
+  generation        GenerationAttempt  @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  deployments       Deployment[]
+  runtimeOperations RuntimeOperation[]
 
   @@unique([configId, version])
   @@map("config_revisions")
@@ -134,4 +143,84 @@ model GenerationSlot {
   leaseExpiresAt DateTime? @map("lease_expires_at") @db.DateTime(3)
 
   @@map("generation_slots")
+}
+
+enum RuntimeStatus {
+  queued
+  running
+  succeeded
+  failed
+}
+
+enum RuntimeAction {
+  start
+  stop
+  delete
+}
+
+enum DeploymentState {
+  starting
+  running
+  stopping
+  stopped
+  failed
+  unknown
+}
+
+model Deployment {
+  configId    String          @id @map("config_id") @db.Char(36)
+  revisionId  String          @map("revision_id") @db.Char(36)
+  operationId String          @map("operation_id") @db.Char(36)
+  state       DeploymentState
+  manifest    String          @db.MediumText
+  digest      String          @db.Char(64)
+  observedAt  DateTime?       @map("observed_at") @db.DateTime(3)
+  config      Configuration   @relation(fields: [configId], references: [id], onDelete: Restrict)
+  revision    ConfigRevision  @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@map("deployments")
+}
+
+model RuntimeOperation {
+  id             String         @id @db.Char(36)
+  userId         String         @map("user_id") @db.Char(36)
+  configId       String         @map("config_id") @db.Char(36)
+  revisionId     String         @map("revision_id") @db.Char(36)
+  requestKey     String         @map("request_key") @db.Char(36)
+  type           RuntimeAction
+  status         RuntimeStatus  @default(queued)
+  stage          String         @default("queued") @db.VarChar(32)
+  errorCode      String?        @map("error_code") @db.VarChar(32)
+  cleanupPending Boolean        @default(false) @map("cleanup_pending")
+  leaseToken     String?        @map("lease_token") @db.Char(36)
+  deadlineAt     DateTime?      @map("deadline_at") @db.DateTime(3)
+  leaseExpiresAt DateTime?      @map("lease_expires_at") @db.DateTime(3)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  completedAt    DateTime?      @map("completed_at") @db.DateTime(3)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  config         Configuration  @relation(fields: [configId], references: [id], onDelete: Restrict)
+  revision       ConfigRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, requestKey])
+  @@index([status, createdAt])
+  @@index([configId, status])
+  @@map("runtime_operations")
+}
+
+model RuntimeReservation {
+  userId   String        @id @map("user_id") @db.Char(36)
+  configId String        @unique @map("config_id") @db.Char(36)
+  user     User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  config   Configuration @relation(fields: [configId], references: [id], onDelete: Restrict)
+
+  @@map("runtime_reservations")
+}
+
+model RuntimePort {
+  port     Int           @id
+  configId String        @map("config_id") @db.Char(36)
+  config   Configuration @relation(fields: [configId], references: [id], onDelete: Restrict)
+
+  @@index([configId])
+  @@map("runtime_ports")
 }

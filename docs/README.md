@@ -1,10 +1,12 @@
 # Docker Image Creator
 
-Status: Vue/Nest and three-service infrastructure Compose are present, with email/password authentication and MySQL sessions. Configuration creation now queues durable background generation, saves an immutable DB revision and private Compose file, and exposes owner-scoped polling. Vue provides creation/list/detail pages that can wait for multi-minute generation, resume status checks, and delete saved configurations with confirmation. The provider is a deterministic fake; live LLM integration, Docker runtime validation, the runner, and terminals remain planned. See [configuration API](configuration-api.md) and [local setup](local-setup.md) for exact behavior and verification.
+Status: Vue/Nest, MySQL authentication, durable fake generation, private saved revisions, and Vue configuration pages are present. Start/Stop/status endpoints, configuration-detail runtime controls, and a private runner included in the default Compose stack are implemented; see [runtime API](runtime-api.md) for provisioning and verification limits. The host now runs Docker 28.1.1. A capability-name validation bug affecting healthy workloads and Stop is fixed in source and verified by a read-only live comparison; deploying the rebuilt runner and full network/volume smoke verification remain pending. Live LLM integration, automatic temporary validation, runtime cleanup, and terminals remain planned.
 
 ## Document map
 
 The [configuration API](configuration-api.md) documents implemented creation, background generation, polling, persistence, file storage, and soft deletion with durable artifact cleanup.
+
+The [runtime API](runtime-api.md) documents the implemented configuration Start/Stop endpoints, operation polling, per-user admission, and default private runner service. Runtime-backed configurations currently reject artifact-only deletion pending the separately confirmed cleanup workflow.
 
 For automatic UI/API reloads in Docker, use the [development setup](local-setup.md#develop-in-docker-with-automatic-reload).
 
@@ -25,7 +27,9 @@ For automatic UI/API reloads in Docker, use the [development setup](local-setup.
 
 The accepted single-document, public-image design is recorded in [ADR 0002](adr/0002-compose-only-generation.md), superseding custom builds from [ADR 0001](adr/0001-generated-bundles-and-validation-runs.md). Compose generation/persistence and polling are implemented with a fake provider. Automatic start/readiness/observation/stop remains planned for the runner milestone, and real provider/model selection is deferred. Domain terms are recorded in the [glossary](../GLOSSARY.md).
 
-The first deployment is a local development tool on a dedicated Docker host for trusted users. A shared public execution service is outside the MVP. The UI uses English. One host, one running deployment per saved configuration, and one replica per service are sufficient initially. Registration is available without sending emails. The target workflow includes an automatic temporary validation trial followed by stop; this runtime phase is not implemented yet. Users explicitly start lasting deployments after review.
+The 2026-11-01 [execution decision](adr/0003-shared-host-execution.md) places user containers alongside application containers through a private runner, with a private network per configuration. Explicit Start creates a lasting deployment; Stop preserves data. Allow one running configuration per user without a global count quota and honor explicit loopback ports. Workloads survive API/runner restarts; service exit and host reboot require explicit Start. The accepted future deletion workflow requires stopped services, separate explicit data deletion, and visible/retryable cleanup until verified complete. Browser terminals will open a container shell with the MySQL CLI available for MySQL services. Execution and console precede live LLM integration in the [implementation plan](implementation-plan.md).
+
+The first deployment is a local development tool on a dedicated Docker host for trusted users. A shared public execution service is outside the MVP. The UI uses English. One host, one running deployment per saved configuration, and one replica per service are sufficient initially. Registration is available without sending emails. Users explicitly start lasting deployments after review. Automatic temporary validation trials remain a later target; they are not part of the next manual lifecycle slice and are not implemented yet.
 
 The model provider and model remain undecided. The planned runtime will use a provider adapter, allowing a fake implementation for development before credentials exist. Initial dependency and image versions are pinned in the scaffold; the full compatibility and clean-install gates remain pending.
 

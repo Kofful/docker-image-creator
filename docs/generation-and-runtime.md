@@ -38,15 +38,31 @@ Full request validation, artifact layout, error handling, and test commands are 
 
 ## Compose and secret policy
 
-Templates set project identities, config/revision labels, one project-scoped bridge network, and named database volumes. Generated services never join the application's infrastructure network. All services have 0.5 CPU, 512 MiB memory, 128 PIDs, and bounded JSON logging (two 5 MiB files). Four services therefore fit the agreed 2 CPU/2 GiB aggregate runtime budget; these settings are not proof of actual Docker enforcement until the runner is tested.
+Templates currently set project identities, config/revision labels, one ordinary project-scoped bridge network, and named database volumes. Generated services never join the application's infrastructure network. The agreed execution policy additionally requires denial of workload access to the internet, application infrastructure, host services, and other configurations; current bridge generation alone does not implement this policy. All services have 0.5 CPU, 512 MiB memory, 128 PIDs, and bounded JSON logging (two 5 MiB files). Four services therefore fit the agreed 2 CPU/2 GiB aggregate runtime budget; these settings are not proof of actual Docker enforcement until the runner is tested.
 
 Deny privileged mode, host namespaces/networking, devices, Docker sockets, arbitrary bind mounts, external networks/volumes, custom container identities, source uploads, dependency installation, Dockerfiles, build contexts, and unsupported Compose fields. Host ports are opt-in loopback bindings; databases are private by default. Image tags are fixed in the compiler, and all four templates pass Compose parsing in integration tests; actual image pull/start/platform compatibility remains to be verified.
 
 Generate database passwords outside the model and encrypt them separately. Public specs, previews, Compose files, and diagnostics contain no generated password values. Compose references required environment placeholders for the future runner to supply privately. No plaintext secret/environment file is generated now. Inputs and original responses use AES-256-GCM with record-specific authenticated context. `CONFIG_ENCRYPTION_KEY` provisioning and backup are required; rotation/multiple key versions are not implemented. Agents must not inspect protected environment files or configure real provider credentials implicitly.
 
-## Planned Docker validation milestone
+## Next execution slice: manual deployments
 
-The accepted target still includes an automatic temporary trial after generation:
+The [runtime API](runtime-api.md) implements Start/Stop/status, configuration-detail runtime controls, and a private runner included in the default Compose stack, subject to supported-host Docker verification. Run user services alongside application containers through that runner, as recorded in [ADR 0003](adr/0003-shared-host-execution.md), for trusted local accounts. Start launches a lasting deployment and checks template-specific readiness; Stop preserves data for the next Start. Generation still saves revisions without invoking Docker. Per-service status/log routes, cleanup, and terminals remain planned.
+
+Agreed lifecycle rules:
+
+- Honor saved, explicitly requested loopback host ports after checking conflicts; no automatic port exposure.
+- Failed Start stops services launched by that attempt, preserves volumes and configuration files, and reports bounded diagnostics and any cleanup failures separately.
+- Running workloads survive API/runner restarts. Unexpected service exits or a host reboot require an explicit Start; report observed state without automatic relaunch.
+- Admit one running configuration per user with no global running-count quota. Keep the reservation through starting, stopping, partial, and unknown states until verifying all services stopped; retain per-service limits and bounded operation execution.
+- The accepted future Delete workflow rejects running services, removes stopped resources/artifacts, requires separate explicit data deletion for volumes, and stays visible/retryable until verified complete. The endpoint slice temporarily blocks artifact-only deletion whenever a deployment exists.
+
+Execution now recompiles existing saved specs without another generation call, applying the runtime policy, server-owned labels, stable volumes, and saved explicit ports. Immutable revisions remain unchanged; deployment manifests/digests are stored separately. Selected services/images/settings are preserved. Engine 28+ is required and the current Engine 27.1.2 is rejected; real supported-host network/readiness/data verification remains pending. Credential delivery and terminal limits remain console work.
+
+Console follows execution: the UI opens an authenticated container shell, including the `mysql` CLI for database administration. It uses runner-managed Docker exec rather than SSH. Real LLM integration follows working execution and console flows.
+
+## Later Docker validation slice
+
+The longer-term target still includes an automatic temporary trial after generation, implemented separately after the manual deployment lifecycle:
 
 1. Only the private runner accesses Docker. Recheck ownership, policy, digests, secret references, quotas, resource labels, and allowed image versions before execution. Run fixed executables with argument arrays and a restricted environment; never concatenate untrusted text into host shell commands.
 2. Each trial, including explicit revalidation, gets fresh attempt-owned resources/data. It must not touch a lasting deployment or implicitly reuse its volumes.

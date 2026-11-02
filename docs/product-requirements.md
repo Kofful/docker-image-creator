@@ -4,6 +4,10 @@
 
 Let an authenticated user describe a small container environment, generate a single Compose document using approved public images and fixed starters, retain the result, automatically test that its services can start, and review the outcome. Successful temporary validation runs stop their services; a lasting deployment is started explicitly and can expose interactive service terminals. See [ADR 0002](adr/0002-compose-only-generation.md) and the [generation design](generation-and-runtime.md) for accepted decisions and initial limits. Configuration creation/saving and frontend polling are implemented with a fake; the Docker validation and lasting-deployment phases remain planned.
 
+The next slice implements manual lasting Start/Stop/status for existing configurations before automatic temporary validation. User containers run alongside the application containers through a private runner, with one isolated network per configuration and denied access to the internet and application infrastructure. A subsequent console slice opens a container shell, including the MySQL CLI for managing a generated database; SSH and a browser database GUI are unnecessary. See [ADR 0003](adr/0003-shared-host-execution.md) and the updated [execution order](implementation-plan.md).
+
+Agreed execution behavior: one running configuration per user with no global count quota, holding the slot through pending/partial/unknown state until verified stopped. Explicit loopback ports remain available. Failed startup stops its attempt's services without deleting data; API/runner restarts preserve workloads, while service exits/host reboot require explicit Start. The agreed future Delete workflow requires stopped services and separate explicit persistent-data deletion, remains visible/retryable through cleanup failure, and releases saved-configuration quota only after verified completion. The implemented [endpoint slice](runtime-api.md) adds a temporary guard blocking artifact-only deletion of runtime-backed configurations until that cleanup exists.
+
 ## MVP screens
 
 | Route                             | Behavior                                                                                                                   |
@@ -23,7 +27,7 @@ For each service collect a unique DNS-safe name, catalog image/tag, environment 
 
 Display how services connect by service name and container port. Default host exposure is disabled; selected host bindings use loopback for the local MVP. Named volume persistence is explicit. Provide template commands that keep application containers running; report that shell access is unavailable when an image lacks a supported shell.
 
-Current milestone: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. List and detail pages also provide confirmed configuration deletion once generation finishes. Provider selection, runtime controls, logs, terminals, and edit/export remain planned. [Configuration API](configuration-api.md) defines implemented inputs; the builder fields below that exceed that contract are future scope.
+Current milestone: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. List and detail pages also provide confirmed configuration deletion once generation finishes. The detail page adds one Start/Stop action left of Delete and a full runtime status label in place of the Generation line, retaining generation progress/errors separately. Starting/Stopping disable the action; failed/unknown deployments offer Stop until verified stopped. Any deployment record disables Delete with an explanation pending runtime cleanup. Provider selection, list runtime controls, logs, terminals, and edit/export remain planned. [Configuration API](configuration-api.md) defines implemented inputs; the builder fields below that exceed that contract are future scope.
 
 ## Main workflows
 

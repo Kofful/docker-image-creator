@@ -136,6 +136,8 @@ try {
       "--test-concurrency=1",
       "dist-test/test/auth.test.js",
       "dist-test/test/configs.test.js",
+      "dist-test/test/runtime.test.js",
+      "dist-test/test/runtime-driver.test.js",
     ],
     env,
     180000,

@@ -88,6 +88,12 @@ importers:
         specifier: 7.1.4
         version: 7.1.4
 
+  apps/runner:
+    dependencies:
+      '@docker-image-creator/api':
+        specifier: workspace:*
+        version: link:../api
+
   apps/web:
     dependencies:
       '@docker-image-creator/contracts':

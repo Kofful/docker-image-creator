@@ -11,13 +11,16 @@ import type {
   CreateConfigRequest,
   CreateConfigResponse,
   GenerationResponse,
+  RuntimeAcceptedResponse,
 } from "@docker-image-creator/contracts";
 import { PrismaService } from "../database/prisma.service";
 import {
   type Configuration,
   type GenerationAttempt,
   type ConfigRevision,
+  type RuntimeOperation,
 } from "../generated/prisma/client";
+import { operationResponse } from "../runtime/runtime.service";
 import { SecretBox } from "./secret-box";
 import { validateServices } from "./compose.compiler";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
@@ -136,17 +139,32 @@ export class ConfigsService {
       pollAfterMs: 2000,
     };
   }
-  async delete(userId: string, id: string): Promise<void> {
-    await this.prisma.$transaction(
+  async delete(userId: string, id: string, requestKey: string = randomUUID()): Promise<RuntimeAcceptedResponse | void> {
+    id = id.toLowerCase();
+    const operation = await this.prisma.$transaction(
       async (tx) => {
         // Use the admission lock so a freed quota slot is visible to new creation.
         await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
         // File publication takes this same lock before writing any artifacts.
         await tx.$queryRaw`SELECT id FROM configurations WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`;
         const config = await tx.configuration.findFirst({
-          where: { id, userId, deletedAt: null },
+          where: { id, userId },
         });
         if (!config) throw new NotFoundException("Configuration not found");
+        const previous = await tx.runtimeOperation.findUnique({
+          where: { userId_requestKey: { userId, requestKey } },
+        });
+        if (previous) {
+          if (previous.configId !== id || previous.type !== "delete")
+            throw new ConflictException("Idempotency-Key was already used for another request");
+          return previous;
+        }
+        if (config.deletedAt) throw new NotFoundException("Configuration not found");
+        const pending = await tx.runtimeOperation.findFirst({
+          where: { configId: id, status: { in: ["queued", "running"] } },
+        });
+        if (pending?.type === "delete") return pending;
+        if (pending) throw new ConflictException("A runtime operation is already pending");
         const active = await tx.generationAttempt.count({
           where: { configId: id, status: { in: ["queued", "running"] } },
         });
@@ -154,6 +172,22 @@ export class ConfigsService {
           throw new ForbiddenException(
             "Cannot delete a configuration during generation",
           );
+        const deployment = await tx.deployment.findUnique({ where: { configId: id } });
+        if (deployment) {
+          if (deployment.state !== "stopped")
+            throw new ConflictException("Stop the configuration before deleting it");
+          const operation = await tx.runtimeOperation.create({
+            data: { id: randomUUID(), userId, configId: id,
+              revisionId: deployment.revisionId, requestKey, type: "delete" },
+          });
+          await tx.configuration.update({
+            where: { id }, data: { deletionRequestedAt: new Date() },
+          });
+          await tx.deployment.update({
+            where: { configId: id }, data: { operationId: operation.id },
+          });
+          return operation;
+        }
         await tx.configuration.update({
           where: { id },
           data: { deletedAt: new Date(), cleanupPending: true },
@@ -161,6 +195,11 @@ export class ConfigsService {
       },
       { isolationLevel: "ReadCommitted" },
     );
+    if (operation) return {
+      operationId: operation.id,
+      statusUrl: `/api/v1/operations/${operation.id}`,
+      pollAfterMs: 2000,
+    };
     // Deletion is already durable. A cleanup failure must not resurrect it.
     await this.cleanup.clean(userId, id).catch(() => undefined);
   }
@@ -176,6 +215,7 @@ export class ConfigsService {
     const row = await this.prisma.configuration.findFirst({
       where: { id, userId, deletedAt: null },
       include: {
+        runtimeOperations: { where: { type: "delete" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 },
         generations: {
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -189,6 +229,7 @@ export class ConfigsService {
   }
   private response(
     row: Configuration & {
+      runtimeOperations: RuntimeOperation[];
       generations: (GenerationAttempt & { revision: ConfigRevision | null })[];
     },
   ): ConfigResponse {
@@ -200,6 +241,7 @@ export class ConfigsService {
       description: row.description,
       services: row.services as unknown as CreateConfigRequest["services"],
       generation: generationResponse(generation),
+      deletion: row.runtimeOperations[0] ? operationResponse(row.runtimeOperations[0]) : null,
       revision:
         generation.status === "succeeded" && revision
           ? {
@@ -218,6 +260,7 @@ export class ConfigsService {
       orderBy: { createdAt: "desc" },
       take: 20,
       include: {
+        runtimeOperations: { where: { type: "delete" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 },
         generations: {
           orderBy: { createdAt: "desc" },
           take: 1,

@@ -36,7 +36,7 @@ Enforce `(configId, version)` uniqueness, scope idempotency keys by owner and ac
 
 ## REST outline
 
-Auth, liveness and the five configuration routes above are implemented; catalog, revision mutation/history, export, Docker lifecycle, volume deletion and terminal routes remain planned. Prefix with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected HTTP endpoints use `Authorization: Bearer <access_token>`. Resource lookups include owner constraints; use 404 for resources not visible to the caller. See [authentication](authentication.md) for exact implemented payloads and errors.
+Auth, liveness, the configuration routes above, and [runtime Start/Stop/operation/deployment routes](runtime-api.md) are implemented. Catalog, revision mutation/history, export, runtime cleanup, volume deletion, and terminals remain planned. Prefix routes with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected routes use `Authorization: Bearer <access_token>`. Scope lookups by owner and return 404 for invisible resources. See [authentication](authentication.md) for its exact payloads/errors.
 
 | Method and path                                   | Result                                                                                                                       |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -64,6 +64,8 @@ Auth, liveness and the five configuration routes above are implemented; catalog,
 | `POST /configs/:id/delete-data`                   | Separate confirmed scoped volume deletion operation                                                                          |
 
 Exact payload schemas and error envelopes belong in `packages/contracts` during implementation. Generation input never contains plaintext secrets: secret values are submitted through a protected API boundary, stored encrypted, and referenced by opaque ID. The server revalidates proposals on save and on start. Long operations return IDs for polling; request cancellation does not imply a Docker operation was canceled.
+
+The accepted runtime deletion workflow requires stopped services, removes owned resources, and uses a separate explicit persistent-data deletion action. Cleanup remains visible/retryable until verified complete before releasing saved-configuration quota. It remains planned: the Start endpoint slice returns 409 for artifact-only DELETE whenever a deployment record exists. Runtime admission is one reserved configuration per user without a global count quota, independent of generation's two-slot queue; partial/unknown state retains that reservation. See [runtime API](runtime-api.md).
 
 ## Terminal protocol
 

@@ -10,8 +10,9 @@ const props = defineProps<{
   name: string;
   generationStatus: GenerationResponse["status"];
   iconOnly?: boolean;
+  disabledReason?: string;
 }>();
-const emit = defineEmits<{ deleted: [] }>();
+const emit = defineEmits<{ deleted: []; deleting: [value: boolean] }>();
 const client = createConfigsClient(useAuthStore().requestApi);
 const deleting = ref(false);
 const error = ref("");
@@ -20,7 +21,7 @@ const generating = computed(() =>
 );
 
 async function remove() {
-  if (deleting.value || generating.value) return;
+  if (deleting.value || generating.value || props.disabledReason) return;
   if (
     !window.confirm(
       `Delete "${props.name}"? This removes the saved configuration and its local Compose files. You cannot restore it from the app.`,
@@ -28,6 +29,7 @@ async function remove() {
   )
     return;
   deleting.value = true;
+  emit("deleting", true);
   error.value = "";
   try {
     await client.remove(props.id);
@@ -39,11 +41,15 @@ async function remove() {
     } else if (cause instanceof AuthError && cause.status === 403) {
       error.value =
         "Generation is still in progress. Try deleting again after it finishes.";
+    } else if (cause instanceof AuthError && cause.status === 409) {
+      error.value =
+        "This configuration has a deployment. Deletion requires runtime cleanup, which is not available yet, even after Stop.";
     } else {
       error.value = "Could not confirm deletion. Please retry.";
     }
   } finally {
     deleting.value = false;
+    emit("deleting", false);
   }
 }
 </script>
@@ -56,7 +62,7 @@ async function remove() {
       :aria-label="`Delete ${name}`"
       :aria-busy="deleting"
       :title="deleting ? 'Deleting…' : `Delete ${name}`"
-      :disabled="deleting || generating"
+      :disabled="deleting || generating || !!disabledReason"
       @click="remove"
     >
       <svg
@@ -75,7 +81,8 @@ async function remove() {
       </svg>
       <template v-else>{{ deleting ? "Deleting…" : "Delete" }}</template>
     </button>
-    <p v-if="generating" class="field-help">
+    <p v-if="disabledReason" class="field-help">{{ disabledReason }}</p>
+    <p v-else-if="generating" class="field-help">
       Deletion is available after generation finishes.
     </p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>

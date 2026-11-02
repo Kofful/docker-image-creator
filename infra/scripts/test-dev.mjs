@@ -167,8 +167,19 @@ try {
   }
   await writeFile(configFile, JSON.stringify(config), { mode: 0o600 });
   created = true;
+  // This reload check boots only web/API/MySQL; runtime has a separate smoke gate.
   compose(
-    ["up", "-d", "--no-build", "--wait", "--wait-timeout", "150"],
+    [
+      "up",
+      "-d",
+      "--no-build",
+      "--wait",
+      "--wait-timeout",
+      "150",
+      "web",
+      "api",
+      "mysql",
+    ],
     180000,
   );
   for (const service of ["web", "api", "mysql"])

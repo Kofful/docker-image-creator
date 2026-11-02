@@ -4,6 +4,8 @@ Implemented: owned MySQL configurations, immutable initial revisions, durable ge
 
 All routes use `/api/v1`, bearer access tokens, origin checks, and `Cache-Control: no-store`. Unauthorized access returns 401; another user's configuration or generation returns 404. Sessions are rechecked on each poll. Shared types are in `packages/contracts/src/index.ts`.
 
+The later [runtime API](runtime-api.md) adds explicit Start/Stop and operation/deployment polling without changing generation behavior. Its temporary deletion guard returns 409 when any deployment record exists, including a stopped deployment; the artifact-only deletion contract below otherwise remains unchanged. Runtime resource/data cleanup is a separate agreed follow-up.
+
 ## Submit once, then poll
 
 `POST /api/v1/configs` accepts:
@@ -61,6 +63,8 @@ The database transaction commits deletion and a `cleanupPending` marker before a
 File publication holds the same configuration-row lock as deletion, verifies that the configuration is not deleted, and checks the generation lease before writing. This prevents an expired worker from publishing an artifact after deletion. Concurrent DELETE requests yield one 204 and subsequent 404 responses.
 
 The Vue list offers a compact trash icon to the right of each configuration’s generation status; the detail page offers a Delete button. Both use a browser confirmation naming the configuration and explaining that it cannot be restored from the app. Buttons are disabled during queued/running generation and while a deletion request is pending. The list has a refresh action to update generation status; the detail page updates through its existing polling. A successful deletion removes the row from the list or returns from detail to the list. A 404 is treated as already removed. A 403 explains that generation is still in progress; network/server errors keep the configuration visible and allow retry. A delayed list refresh cannot restore a row deleted in that view.
+
+The [runtime UI follow-up](runtime-api.md#configuration-detail-ui) adds Start/Stop and a runtime label to detail. Delete is also disabled until runtime status is checked, during pending/unconfirmed runtime actions, and whenever a deployment exists, including after Stop or a failed Start. Its explanation identifies the missing runtime cleanup. Both deletion controls explain runtime-related 409 responses; the list retains generation status and its current actions.
 
 ## Worker, persistence and files
 
