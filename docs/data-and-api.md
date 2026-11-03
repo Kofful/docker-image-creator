@@ -10,7 +10,7 @@ Implemented configuration contracts are documented in [configuration API](config
 | `GET /generations/:id` | Owned generation status/stage, redacted error, timestamps, revision ID, provider and runtime-validation flags, cleanup marker                   |
 | `GET /configs/:id`     | Owned configuration, latest generation and successful initial revision with Compose, digest and relative artifact path                          |
 | `GET /configs`         | Latest owned configurations, at most 20; supports job discovery/recovery                                                                        |
-| `DELETE /configs/:id`  | Soft-delete owned configuration and remove local artifacts; 204, repeated DELETE 404, active generation 403; failed cleanup retried durably     |
+| `DELETE /configs/:id`  | Delete owned configuration; no deployment: 204/artifact cleanup; stopped deployment: 202/runner cleanup; active runtime: 409; generation: 403     |
 
 Current persistence adds `Configuration`, `GenerationAttempt`, `ConfigRevision`, `ConfigSecret`, and two seeded `GenerationSlot` rows through migration `20261030010000_configs`. Migration `20261101000000_config_deletion` adds `Configuration.deletedAt` and a durable artifact-cleanup marker. Inputs, returned output and generated passwords are encrypted. `ConfigRevision` is the immutable initial revision; subsequent revision/edit/history/export and revalidation contracts remain planned. Deletion retains all database records but hides configuration and generation reads, releases quota, and rejects replay of the original creation key with 400. Current transport types are in `packages/contracts`; no ORM model is imported by the frontend.
 
@@ -36,7 +36,7 @@ Enforce `(configId, version)` uniqueness, scope idempotency keys by owner and ac
 
 ## REST outline
 
-Auth, liveness, the configuration routes above, and [runtime Start/Stop/operation/deployment routes](runtime-api.md) are implemented. Catalog, revision mutation/history, export, runtime cleanup, volume deletion, and terminals remain planned. Prefix routes with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected routes use `Authorization: Bearer <access_token>`. Scope lookups by owner and return 404 for invisible resources. See [authentication](authentication.md) for its exact payloads/errors.
+Auth, liveness, the configuration routes above, and [runtime Start/Stop/operation/deployment routes](runtime-api.md) are implemented. Stopped-resource deletion is implemented through the runner. Catalog, revision mutation/history, export, explicit volume deletion, and terminals remain planned. Prefix routes with `/api/v1`. Registration, login, refresh, and minimal liveness do not require an access token; refresh requires a valid refresh token. Protected routes use `Authorization: Bearer <access_token>`. Scope lookups by owner and return 404 for invisible resources. See [authentication](authentication.md) for its exact payloads/errors.
 
 | Method and path                                   | Result                                                                                                                       |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -60,12 +60,12 @@ Auth, liveness, the configuration routes above, and [runtime Start/Stop/operatio
 | `GET /configs/:id/services`                       | Observed statuses and approved host endpoints                                                                                |
 | `GET /configs/:id/services/:serviceId/logs`       | Bounded, redacted service logs                                                                                               |
 | `POST /configs/:id/services/:serviceId/terminals` | Authorize running service and issue short-lived one-use connection ticket                                                    |
-| `DELETE /configs/:id`                             | Implemented: 403 during generation; otherwise soft-delete and remove local artifacts, 204; repeat 404; durable cleanup retry |
+| `DELETE /configs/:id`                             | Implemented: generation 403; no deployment 204; stopped deployment 202/runner cleanup; active runtime 409; volume data retained |
 | `POST /configs/:id/delete-data`                   | Separate confirmed scoped volume deletion operation                                                                          |
 
 Exact payload schemas and error envelopes belong in `packages/contracts` during implementation. Generation input never contains plaintext secrets: secret values are submitted through a protected API boundary, stored encrypted, and referenced by opaque ID. The server revalidates proposals on save and on start. Long operations return IDs for polling; request cancellation does not imply a Docker operation was canceled.
 
-The accepted runtime deletion workflow requires stopped services, removes owned resources, and uses a separate explicit persistent-data deletion action. Cleanup remains visible/retryable until verified complete before releasing saved-configuration quota. It remains planned: the Start endpoint slice returns 409 for artifact-only DELETE whenever a deployment record exists. Runtime admission is one reserved configuration per user without a global count quota, independent of generation's two-slot queue; partial/unknown state retains that reservation. See [runtime API](runtime-api.md).
+The accepted runtime deletion workflow requires stopped services, removes owned resources, and uses a separate explicit persistent-data deletion action. Cleanup remains visible/retryable until verified complete before releasing saved-configuration quota. Stopped-resource cleanup is implemented; `deletionRequestedAt` prevents Start through failed/partial cleanup, and owned delete-operation status remains readable after success. Explicit volume deletion remains planned. Runtime admission is one reserved configuration per user without a global count quota, independent of generation's two-slot queue; partial/unknown state retains that reservation. See [runtime API](runtime-api.md).
 
 ## Terminal protocol
 

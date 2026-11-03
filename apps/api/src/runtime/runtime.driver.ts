@@ -155,6 +155,8 @@ export class DockerRuntimeDriver extends RuntimeDriver {
     const rows = JSON.parse(
       await this.command(["inspect", ...ids], signal),
     ) as Container[];
+    if (rows.length !== ids.length || rows.some((row) => !ids.includes(row.Id)))
+      throw new RuntimeFailure("RESOURCE_CONFLICT");
     const names = new Set<string>();
     for (const row of rows) {
       this.owned(row.Config.Labels, target);
@@ -237,7 +239,8 @@ export class DockerRuntimeDriver extends RuntimeDriver {
       signal,
     );
     if (!id) return;
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new RuntimeFailure("RESOURCE_CONFLICT");
+    if (!/^[a-f0-9]{64}$/.test(id))
+      throw new RuntimeFailure("RESOURCE_CONFLICT");
     const rows = JSON.parse(
       await this.command(["network", "inspect", id], signal),
     ) as {
@@ -258,20 +261,29 @@ export class DockerRuntimeDriver extends RuntimeDriver {
     )
       throw new RuntimeFailure("RESOURCE_CONFLICT");
     this.owned(rows[0]!.Labels, target);
-    if (allowedContainers && (!rows[0]!.Containers || Object.keys(rows[0]!.Containers).some(id => !allowedContainers.has(id))))
+    if (
+      allowedContainers &&
+      (!rows[0]!.Containers ||
+        Object.keys(rows[0]!.Containers).some(
+          (id) => !allowedContainers.has(id),
+        ))
+    )
       throw new RuntimeFailure("RESOURCE_CONFLICT");
     return id;
   }
   async remove(target: RuntimeTarget, signal: AbortSignal): Promise<void> {
     const rows = await this.containers(target, signal);
-    if (rows.some(row => row.State.Running || row.State.Restarting))
+    if (rows.some((row) => row.State.Running || row.State.Restarting))
       throw new RuntimeFailure("DELETE_FAILED");
-    await this.network(target, signal, new Set(rows.map(row => row.Id)));
+    await this.network(target, signal, new Set(rows.map((row) => row.Id)));
     // No force or volume flags: Docker refuses a container that started since inspection.
     for (const row of rows) await this.command(["rm", row.Id], signal);
     const network = await this.network(target, signal, new Set());
     if (network) await this.command(["network", "rm", network], signal);
-    if ((await this.containers(target, signal)).length || await this.network(target, signal))
+    if (
+      (await this.containers(target, signal)).length ||
+      (await this.network(target, signal))
+    )
       throw new RuntimeFailure("DELETE_FAILED");
   }
   async observe(

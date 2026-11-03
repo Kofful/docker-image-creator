@@ -44,7 +44,11 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
   const state = computed(() => {
     if (statusError.value) return "unknown";
     if (pendingAction.value)
-      return pendingAction.value === "start" ? "starting" : "stopping";
+      return pendingAction.value === "start"
+        ? "starting"
+        : pendingAction.value === "delete"
+          ? "deleting"
+          : "stopping";
     if (!checked.value) return "unknown";
     return deployment.value?.state ?? "not_started";
   });
@@ -52,8 +56,10 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
     () => checked.value && !statusError.value && !pendingAction.value,
   );
   const deleteDisabledReason = computed(() => {
-    if (deployment.value || accepted.value)
-      return "Deletion is unavailable after a deployment exists. Runtime cleanup is not available yet, even after Stop.";
+    if (pendingAction.value && pendingAction.value !== "delete")
+      return "Wait for the pending runtime operation before deleting.";
+    if (deployment.value && deployment.value.state !== "stopped")
+      return "Stop the configuration before deleting it.";
     if (submitting.value || uncertain.value)
       return "Deletion is unavailable until the runtime request is confirmed.";
     if (!checked.value || statusError.value)
@@ -122,6 +128,7 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
     }
     if (
       !signal.aborted &&
+      operation.value?.type !== "delete" &&
       (pendingAction.value ||
         deployment.value?.state === "starting" ||
         deployment.value?.state === "stopping" ||

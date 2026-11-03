@@ -8,6 +8,7 @@ import { useAuthStore } from "../src/auth/store";
 import type {
   ConfigResponse,
   GenerationResponse,
+  RuntimeOperationResponse,
 } from "@docker-image-creator/contracts";
 import { credentials, json, tokens } from "./helpers";
 
@@ -348,4 +349,79 @@ describe("configuration views", () => {
       expect(wrapper!.text()).toContain("No configurations yet.");
     },
   );
+  it("keeps a list entry until runner cleanup succeeds and then stops fetching", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      fetchMock.mockResolvedValueOnce(json([config]));
+      await open("/configs");
+      const operation: RuntimeOperationResponse = {
+        id: "delete-one",
+        configId: config.id,
+        revisionId: config.revision!.id,
+        type: "delete",
+        status: "queued",
+        stage: "queued",
+        error: null,
+        cleanupPending: false,
+        createdAt: "2026-11-02T00:00:00.000Z",
+        completedAt: null,
+      };
+      fetchMock
+        .mockResolvedValueOnce(json({ operationId: operation.id }, 202))
+        .mockResolvedValueOnce(json(operation));
+      await wrapper!
+        .get('button[aria-label="Delete My starter"]')
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper!.find('a[href="/configs/config-one"]').exists()).toBe(
+        true,
+      );
+      expect(wrapper!.text()).toContain("Waiting for cleanup confirmation");
+      fetchMock.mockResolvedValueOnce(
+        json({ ...operation, status: "succeeded" }),
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper!.find('a[href="/configs/config-one"]').exists()).toBe(
+        false,
+      );
+      const count = fetchMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(fetchMock.mock.calls).toHaveLength(count);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("resumes a persisted deletion when the list is reopened without another DELETE", async () => {
+    vi.useFakeTimers();
+    try {
+      const operation: RuntimeOperationResponse = {
+        id: "delete-one",
+        configId: config.id,
+        revisionId: config.revision!.id,
+        type: "delete",
+        status: "running",
+        stage: "deleting",
+        error: null,
+        cleanupPending: false,
+        createdAt: "2026-11-02T00:00:00.000Z",
+        completedAt: null,
+      };
+      fetchMock
+        .mockResolvedValueOnce(json([{ ...config, deletion: operation }]))
+        .mockResolvedValueOnce(json(operation));
+      await open("/configs");
+      expect(wrapper!.text()).toContain("Waiting for cleanup confirmation");
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE"),
+      ).toBe(false);
+      fetchMock.mockResolvedValueOnce(
+        json({ ...operation, status: "succeeded" }),
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(wrapper!.text()).toContain("No configurations yet");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

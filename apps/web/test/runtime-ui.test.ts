@@ -157,7 +157,7 @@ describe("configuration runtime controls", () => {
     ["failed", "Failed", "Stop", false],
     ["unknown", "Unknown", "Stop", false],
   ] as const)(
-    "renders %s with only the appropriate action and deletion blocked",
+    "renders %s with the appropriate action and allows deletion only when stopped",
     async (state, label, button, disabled) => {
       setDeployment(state);
       await open();
@@ -167,8 +167,14 @@ describe("configuration runtime controls", () => {
         disabled,
       );
       expect(wrapper!.get(".config-actions").findAll("button")).toHaveLength(2);
-      expect(deleteButton().attributes("disabled")).toBeDefined();
-      expect(wrapper!.text()).toContain("even after Stop");
+      expect(deleteButton().attributes("disabled") !== undefined).toBe(
+        state !== "stopped",
+      );
+      if (state !== "stopped")
+        expect(wrapper!.text()).toContain(
+          "Stop the configuration before deleting it",
+        );
+      if (state === "stopped") return;
       await deleteButton().trigger("click");
       expect(
         fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE"),
@@ -253,7 +259,7 @@ describe("configuration runtime controls", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(wrapper!.get(".runtime-status").text()).toBe("Stopped");
     expect(actionButton().text()).toBe("Start");
-    expect(deleteButton().attributes("disabled")).toBeDefined();
+    expect(deleteButton().attributes("disabled")).toBeUndefined();
     const afterStop = fetchMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(30000);
     expect(fetchMock.mock.calls).toHaveLength(afterStop);
@@ -523,7 +529,7 @@ describe("configuration runtime controls", () => {
     fetchMock.mockReturnValueOnce(deletion.promise);
     await deleteButton().trigger("click");
     expect(actionButton().attributes("disabled")).toBeDefined();
-    deletion.resolve(json({}, 500));
+    deletion.resolve(json({}, 403));
     await flushPromises();
     expect(actionButton().attributes("disabled")).toBeUndefined();
     operation = { ...operation, status: "running" };
@@ -564,5 +570,162 @@ describe("configuration runtime controls", () => {
     await vi.advanceTimersByTimeAsync(10000);
     expect(fetchMock.mock.calls).toHaveLength(count);
     expect(wrapper!.find(".runtime-status").exists()).toBe(false);
+  });
+  it("keeps stopped detail visible and Start disabled until asynchronous deletion is confirmed", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    setDeployment("stopped");
+    const router = await open();
+    operation = {
+      ...operation,
+      type: "delete",
+      status: "queued",
+      stage: "queued",
+    };
+    fetchMock.mockResolvedValueOnce(
+      json({ operationId: operation.id, pollAfterMs: 2000 }, 202),
+    );
+    await deleteButton().trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/configs/config-one");
+    expect(wrapper!.get(".runtime-status").text()).toBe("Deleting");
+    expect(actionButton().attributes("disabled")).toBeDefined();
+    expect(deleteButton().attributes("disabled")).toBeDefined();
+    expect(wrapper!.text()).toContain("Persistent data is preserved");
+    operation = { ...operation, status: "succeeded" };
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(router.currentRoute.value.path).toBe("/configs");
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+  });
+  it("retains a cleanup failure, blocks Start, and allows an explicit Delete retry", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    setDeployment("stopped");
+    await open();
+    operation = {
+      ...operation,
+      type: "delete",
+      status: "failed",
+      cleanupPending: true,
+      error: { code: "DELETE_FAILED", message: "Retry Delete." },
+    };
+    fetchMock.mockResolvedValueOnce(json({ operationId: operation.id }, 202));
+    await deleteButton().trigger("click");
+    await flushPromises();
+    expect(wrapper!.text()).toContain("Cleanup failed");
+    expect(actionButton().attributes("disabled")).toBeDefined();
+    expect(deleteButton().attributes("disabled")).toBeUndefined();
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+    const first = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "DELETE",
+    );
+    fetchMock.mockResolvedValueOnce(
+      json({ operationId: "operation-two" }, 202),
+    );
+    operation = {
+      ...operation,
+      id: "operation-two",
+      status: "succeeded",
+      error: null,
+    };
+    await deleteButton().trigger("click");
+    await flushPromises();
+    const deletions = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "DELETE",
+    );
+    expect(
+      new Headers(deletions[1]?.[1]?.headers).get("Idempotency-Key"),
+    ).not.toBe(new Headers(first?.[1]?.headers).get("Idempotency-Key"));
+    expect(wrapper!.text()).toContain("Your configurations");
+  });
+  it("resumes pending deletion on reopening detail and cancels its requests on navigation", async () => {
+    operation = {
+      ...operation,
+      type: "delete",
+      status: "running",
+      stage: "deleting",
+    };
+    setDeployment("stopped");
+    const router = await open();
+    expect(wrapper!.get(".runtime-status").text()).toBe("Deleting");
+    const signal = fetchMock.mock.calls.find(([path]) =>
+      String(path).includes("/operations/"),
+    )?.[1]?.signal;
+    await router.push("/account");
+    await flushPromises();
+    expect(signal?.aborted).toBe(true);
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+  });
+  it("keeps Start blocked after a lost deletion response and reuses the deletion key on retry", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    setDeployment("stopped");
+    await open();
+    fetchMock.mockRejectedValueOnce(new TypeError("lost response"));
+    await deleteButton().trigger("click");
+    await flushPromises();
+    expect(actionButton().attributes("disabled")).toBeDefined();
+    expect(deleteButton().attributes("disabled")).toBeUndefined();
+    operation = { ...operation, type: "delete", status: "succeeded" };
+    fetchMock.mockResolvedValueOnce(json({ operationId: operation.id }, 202));
+    await deleteButton().trigger("click");
+    await flushPromises();
+    const deletions = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "DELETE",
+    );
+    expect(deletions).toHaveLength(2);
+    expect(new Headers(deletions[1]?.[1]?.headers).get("Idempotency-Key")).toBe(
+      new Headers(deletions[0]?.[1]?.headers).get("Idempotency-Key"),
+    );
+  });
+  it("backs off a temporary deletion-status failure and stops after confirmed success", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    setDeployment("stopped");
+    await open();
+    operation = { ...operation, type: "delete", status: "succeeded" };
+    fetchMock
+      .mockResolvedValueOnce(json({ operationId: operation.id }, 202))
+      .mockResolvedValueOnce(json({}, 503));
+    await deleteButton().trigger("click");
+    await flushPromises();
+    expect(wrapper!.text()).toContain("Could not check deletion status");
+    expect(actionButton().attributes("disabled")).toBeDefined();
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wrapper!.text()).toContain("Your configurations");
+    const completed = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(completed);
+  });
+  it("pauses polling on lost deletion authorization and offers a manual status retry", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    setDeployment("stopped");
+    await open();
+    operation = {
+      ...operation,
+      type: "delete",
+      status: "failed",
+      error: { code: "DELETE_FAILED", message: "Retry Delete." },
+    };
+    fetchMock
+      .mockResolvedValueOnce(json({ operationId: operation.id }, 202))
+      .mockResolvedValueOnce(json({}, 403));
+    await deleteButton().trigger("click");
+    await flushPromises();
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+    const retry = wrapper!
+      .findAll("button")
+      .find((button) => button.text() === "Retry deletion status check")!;
+    await retry.trigger("click");
+    await flushPromises();
+    expect(wrapper!.text()).toContain("Cleanup failed");
+    expect(deleteButton().attributes("disabled")).toBeUndefined();
   });
 });

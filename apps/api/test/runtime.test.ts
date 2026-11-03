@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { beforeEach, afterEach, test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -33,6 +33,7 @@ import {
 import { RuntimeSettings, RuntimeWorker } from "../src/runtime/runtime.worker";
 import {
   digest,
+  runtimeLabels,
   revisionServices,
   runtimeManifest,
 } from "../src/runtime/runtime.manifest";
@@ -46,7 +47,8 @@ class ControlledDriver extends RuntimeDriver {
   removed: string[] = [];
   async remove(target: RuntimeTarget, signal: AbortSignal) {
     signal.throwIfAborted();
-    if (this.failDelete || this.states.get(target.configId)?.running) throw new RuntimeFailure("DELETE_FAILED");
+    if (this.failDelete || this.states.get(target.configId)?.running)
+      throw new RuntimeFailure("DELETE_FAILED");
     this.removed.push(target.configId);
     this.states.delete(target.configId);
   }
@@ -88,28 +90,23 @@ beforeEach(async () => {
     root,
     pollMs: 3600000,
   });
-  const module = await Test.createTestingModule({
-    imports: [AppModule],
-    providers: [
-      PrismaService,
-      GenerationSettings,
-      SecretBox,
-      ArtifactStore,
-      RuntimeWorker,
-      RuntimeSettings,
-      { provide: RuntimeDriver, useValue: driver },
-    ],
-  })
+  const module = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(GenerationSettings)
     .useValue(settings)
-    .overrideProvider(RuntimeSettings)
-    .useValue(Object.assign(new RuntimeSettings(), { pollMs: 3600000 }))
+    .overrideProvider(ArtifactStore)
+    .useValue(new ArtifactStore(settings))
     .compile();
   app = module.createNestApplication();
   configureApp(app);
   await app.init();
   prisma = app.get(PrismaService);
-  worker = app.get(RuntimeWorker);
+  worker = new RuntimeWorker(
+    prisma,
+    app.get(SecretBox),
+    driver,
+    Object.assign(new RuntimeSettings(), { pollMs: 3600000 }),
+    app.get(ArtifactStore),
+  );
   generation = app.get(GenerationWorker);
   await prisma.runtimePort.deleteMany();
   await prisma.runtimeReservation.deleteMany();
@@ -117,10 +114,14 @@ beforeEach(async () => {
   await prisma.deployment.deleteMany();
   auth = await register();
 });
-afterEach(async () => {
+async function teardown() {
+  await worker?.onModuleDestroy();
+  await generation?.onModuleDestroy();
   await app?.close();
   await rm(root, { recursive: true, force: true });
-});
+}
+afterEach(teardown);
+
 async function register(): Promise<AuthResponse> {
   return (
     await request(app.getHttpServer())
@@ -644,6 +645,8 @@ test("real Docker capability gate rejects an older daemon before creating worklo
     { encoding: "utf8" },
   ).trim();
   if (Number(version.split(".")[0]) >= 28) {
+    // Dynamic skip bypasses afterEach on the supported Node test runner.
+    await teardown();
     context.skip("Host supports isolation; run the opt-in workload smoke test");
     return;
   }
@@ -689,4 +692,359 @@ test("real Docker capability gate rejects an older daemon before creating worklo
     ).trim(),
     "",
   );
+});
+
+function remove(
+  config: ConfigResponse,
+  key: string = randomUUID(),
+  owner = auth,
+) {
+  return request(app.getHttpServer())
+    .delete(`/api/v1/configs/${config.id}`)
+    .auth(owner.access_token, { type: "bearer" })
+    .set("Idempotency-Key", key);
+}
+async function stoppedConfig() {
+  const config = await saved();
+  const started = (await start(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  await finish(started.operationId);
+  const stopped = (await stop(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  await finish(stopped.operationId);
+  return config;
+}
+test("Delete queues owned stopped-resource cleanup, stays visible until verified, and retains volume recovery metadata", async () => {
+  const config = await stoppedConfig();
+  const secrets = await prisma.configSecret.findMany({
+    where: { configId: config.id },
+  });
+  const key = randomUUID();
+  const response = await remove(config, key).expect(202);
+  const accepted = response.body as RuntimeAcceptedResponse;
+  assert.equal(response.headers.location, accepted.statusUrl);
+  assert.equal(response.headers["retry-after"], "2");
+  assert.equal(driver.removed.length, 0);
+  const visible = (
+    await request(app.getHttpServer())
+      .get(`/api/v1/configs/${config.id}`)
+      .auth(auth.access_token, { type: "bearer" })
+      .expect(200)
+  ).body as ConfigResponse;
+  assert.equal(visible.deletion?.status, "queued");
+  await access(join(root, auth.user.id, config.id));
+  await start(config).expect(409);
+  await stop(config).expect(409);
+  await worker.tick();
+  assert.equal((await finish(accepted.operationId)).status, "succeeded");
+  assert.deepEqual(driver.removed, [config.id]);
+  await assert.rejects(access(join(root, auth.user.id, config.id)));
+  await request(app.getHttpServer())
+    .get(`/api/v1/configs/${config.id}`)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(404);
+  const list = (
+    await request(app.getHttpServer())
+      .get("/api/v1/configs")
+      .auth(auth.access_token, { type: "bearer" })
+  ).body as ConfigResponse[];
+  assert.ok(!list.some((row) => row.id === config.id));
+  assert.deepEqual(
+    await prisma.configSecret.findMany({ where: { configId: config.id } }),
+    secrets,
+  );
+  assert.ok(
+    await prisma.configRevision.findUnique({
+      where: { id: config.revision!.id },
+    }),
+  );
+  assert.ok(
+    await prisma.deployment.findUnique({ where: { configId: config.id } }),
+  );
+  assert.equal(
+    (await remove(config, key).expect(202)).body.operationId,
+    accepted.operationId,
+  );
+  await remove(config).expect(404);
+  const other = await register();
+  await request(app.getHttpServer())
+    .get(accepted.statusUrl)
+    .auth(other.access_token, { type: "bearer" })
+    .expect(404);
+  await remove(config, key, other).expect(404);
+});
+test("concurrent Delete requests share one job and cannot race a new Start", async () => {
+  const config = await stoppedConfig();
+  const key = randomUUID();
+  const results = await Promise.all([
+    remove(config, key),
+    remove(config, key),
+    start(config),
+  ]);
+  // Either Start wins admission or deletion wins; neither can run concurrently.
+  if (results[0]!.status === 202) {
+    assert.equal(results[1]!.body.operationId, results[0]!.body.operationId);
+    assert.equal(results[2]!.status, 409);
+    assert.equal(
+      await prisma.runtimeOperation.count({
+        where: { configId: config.id, type: "delete" },
+      }),
+      1,
+    );
+  } else {
+    assert.equal(results[0]!.status, 409);
+    assert.equal(results[1]!.status, 409);
+    assert.equal(results[2]!.status, 202);
+  }
+});
+test("failed Delete stays visible, blocks Start, retains its error through reconciliation, and succeeds on explicit retry", async () => {
+  const config = await stoppedConfig();
+  driver.failDelete = true;
+  const key = randomUUID();
+  const first = (await remove(config, key).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(first.operationId)).cleanupPending, true);
+  await worker.tick();
+  assert.equal((await finish(first.operationId)).cleanupPending, true);
+  await start(config).expect(409);
+  await access(join(root, auth.user.id, config.id));
+  assert.equal(
+    (await remove(config, key).expect(202)).body.operationId,
+    first.operationId,
+  );
+  driver.failDelete = false;
+  const retry = (await remove(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  assert.notEqual(retry.operationId, first.operationId);
+  await worker.tick();
+  assert.equal((await finish(retry.operationId)).status, "succeeded");
+});
+test("file cleanup failure keeps deletion visible and retryable after Docker resources are already removed", async () => {
+  const config = await stoppedConfig();
+  const files = app.get(ArtifactStore);
+  const original = files.removeConfig.bind(files);
+  files.removeConfig = async () => {
+    throw new Error("test file failure");
+  };
+  const first = (await remove(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(first.operationId)).error?.code, "DELETE_FAILED");
+  assert.equal(
+    (await prisma.configuration.findUniqueOrThrow({ where: { id: config.id } }))
+      .deletedAt,
+    null,
+  );
+  await start(config).expect(409);
+  files.removeConfig = original;
+  const retry = (await remove(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(retry.operationId)).status, "succeeded");
+});
+test("expired Delete leases retain visible intent and require an explicit retry", async () => {
+  const config = await stoppedConfig();
+  const first = (await remove(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await prisma.runtimeOperation.update({
+    where: { id: first.operationId },
+    data: {
+      status: "running",
+      leaseToken: randomUUID(),
+      deadlineAt: new Date(0),
+      leaseExpiresAt: new Date(0),
+    },
+  });
+  await worker.tick();
+  assert.equal((await finish(first.operationId)).error?.code, "INTERRUPTED");
+  assert.equal(driver.removed.length, 0);
+  await start(config).expect(409);
+  const retry = (await remove(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(retry.operationId)).status, "succeeded");
+});
+test("Delete enforces ownership, authentication, origin, keys, and a fresh runner check of stopped state", async () => {
+  const config = await stoppedConfig();
+  const other = await register();
+  await remove(config, randomUUID(), other).expect(404);
+  await remove(config, "invalid").expect(400);
+  await remove(config).set("Origin", "https://untrusted.example").expect(403);
+  await request(app.getHttpServer())
+    .delete(`/api/v1/configs/${config.id}`)
+    .expect(401);
+  const prior = await prisma.runtimeOperation.findFirstOrThrow({
+    where: { configId: config.id, type: "start" },
+  });
+  await remove(config, prior.requestKey).expect(409);
+  // The API saw Stopped, but an external actor restarted a container before execution.
+  driver.states.set(config.id, { running: true, ready: true });
+  const accepted = (await remove(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(accepted.operationId)).status, "failed");
+  assert.equal(driver.removed.length, 0);
+  assert.equal(
+    (await prisma.configuration.findUniqueOrThrow({ where: { id: config.id } }))
+      .deletedAt,
+    null,
+  );
+});
+
+test("real Docker Delete removes only its stopped containers/network and preserves its named database volume", async (context) => {
+  const env = {
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    DOCKER_HOST: "unix:///var/run/docker.sock",
+  };
+  const docker = (args: string[]) =>
+    execFileSync("docker", args, {
+      env,
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  if (
+    Number(
+      docker(["version", "--format", "{{.Server.Version}}"]).split(".")[0],
+    ) < 28
+  ) {
+    await teardown();
+    context.skip("Disposable cleanup check requires Docker Engine 28+");
+    return;
+  }
+  const userId = randomUUID(),
+    configId = randomUUID(),
+    revisionId = randomUUID();
+  const project = `dic-${configId}`;
+  const network = `${project}_stack`,
+    volume = `${project}_db-data`;
+  const labels = runtimeLabels(userId, configId);
+  const labelArgs = Object.entries(labels).flatMap(([key, value]) => [
+    "--label",
+    `${key}=${value}`,
+  ]);
+  const target: RuntimeTarget = {
+    userId,
+    configId,
+    revisionId,
+    services: [{ name: "db", type: "database", image: "mysql" }],
+    manifest: "",
+    secrets: {},
+  };
+  target.manifest = runtimeManifest(
+    userId,
+    configId,
+    revisionId,
+    target.services,
+  );
+  let container: string | undefined;
+  let networkCreated = false,
+    volumeCreated = false;
+  const owned = (observed: Record<string, string>) => {
+    for (const [key, value] of Object.entries(labels))
+      assert.equal(observed[key], value);
+  };
+  try {
+    docker([
+      "network",
+      "create",
+      "--internal",
+      "--opt",
+      "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+      ...labelArgs,
+      network,
+    ]);
+    networkCreated = true;
+    docker(["volume", "create", ...labelArgs, volume]);
+    volumeCreated = true;
+    container = docker([
+      "create",
+      "--name",
+      `${project}-db-test`,
+      ...labelArgs,
+      "--label",
+      `com.docker.compose.project=${project}`,
+      "--label",
+      "com.docker.compose.service=db",
+      "--label",
+      `docker-image-creator.revision=${revisionId}`,
+      "--network",
+      network,
+      "--memory",
+      "512m",
+      "--cpus",
+      "0.5",
+      "--pids-limit",
+      "128",
+      "--cap-drop",
+      "NET_RAW",
+      "--restart",
+      "no",
+      "--mount",
+      `type=volume,source=${volume},target=/var/lib/mysql`,
+      "mysql:8.4.11",
+    ]);
+    const live = new DockerRuntimeDriver();
+    await live.remove(target, AbortSignal.timeout(15000));
+    assert.equal(
+      docker([
+        "ps",
+        "--all",
+        "--quiet",
+        "--filter",
+        `label=com.docker.compose.project=${project}`,
+      ]),
+      "",
+    );
+    assert.equal(
+      docker(["network", "ls", "--quiet", "--filter", `name=^${network}$`]),
+      "",
+    );
+    owned(
+      JSON.parse(
+        docker(["volume", "inspect", "--format", "{{json .Labels}}", volume]),
+      ) as Record<string, string>,
+    );
+    await live.remove(target, AbortSignal.timeout(15000));
+  } finally {
+    if (
+      container &&
+      docker(["ps", "--all", "--quiet", "--filter", `id=${container}`])
+    ) {
+      owned(
+        JSON.parse(
+          docker(["inspect", "--format", "{{json .Config.Labels}}", container]),
+        ) as Record<string, string>,
+      );
+      docker(["rm", "--force", container]);
+    }
+    if (
+      networkCreated &&
+      docker(["network", "ls", "--quiet", "--filter", `name=^${network}$`])
+    ) {
+      owned(
+        JSON.parse(
+          docker([
+            "network",
+            "inspect",
+            "--format",
+            "{{json .Labels}}",
+            network,
+          ]),
+        ) as Record<string, string>,
+      );
+      docker(["network", "rm", network]);
+    }
+    if (volumeCreated) {
+      owned(
+        JSON.parse(
+          docker(["volume", "inspect", "--format", "{{json .Labels}}", volume]),
+        ) as Record<string, string>,
+      );
+      docker(["volume", "rm", volume]);
+    }
+  }
 });

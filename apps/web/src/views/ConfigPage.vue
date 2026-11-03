@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from "vue-router";
 import type {
   ConfigResponse,
   GenerationResponse,
+  RuntimeOperationResponse,
 } from "@docker-image-creator/contracts";
 import { useAuthStore } from "../auth/store";
 import { createConfigsClient } from "../configs/client";
@@ -13,7 +14,7 @@ const route = useRoute();
 const router = useRouter();
 const client = createConfigsClient(useAuthStore().requestApi);
 const {
-  state,
+  state: runtimeState,
   operation,
   checked,
   pendingAction,
@@ -29,12 +30,24 @@ const generation = ref<GenerationResponse | null>(null);
 const error = ref("");
 const reconnecting = ref(false);
 const deleting = ref(false);
+const deletion = ref<RuntimeOperationResponse | null>(null);
+const state = computed(() =>
+  deleting.value ? "deleting" : runtimeState.value,
+);
+const deletionStatus = computed(
+  () =>
+    deletion.value ??
+    (operation.value?.type === "delete"
+      ? operation.value
+      : config.value?.deletion),
+);
 const labels = {
   not_started: "Not started",
   starting: "Starting",
   running: "Running",
   stopping: "Stopping",
   stopped: "Stopped",
+  deleting: "Deleting",
   failed: "Failed",
   unknown: "Unknown",
 };
@@ -42,11 +55,12 @@ const generating = computed(() =>
   ["queued", "running"].includes(generation.value?.status ?? ""),
 );
 const action = computed(() =>
-  ["running", "failed", "unknown"].includes(state.value) && checked.value
+  ["running", "failed", "unknown"].includes(runtimeState.value) && checked.value
     ? "stop"
     : "start",
 );
 const actionLabel = computed(() => {
+  if (state.value === "deleting") return "Deleting…";
   if (state.value === "starting") return "Starting…";
   if (state.value === "stopping") return "Stopping…";
   return action.value === "stop" ? "Stop" : "Start";
@@ -55,6 +69,7 @@ const actionDisabled = computed(
   () =>
     !canAct.value ||
     deleting.value ||
+    (!!deletionStatus.value && action.value === "start") ||
     generating.value ||
     ["starting", "stopping"].includes(state.value) ||
     (action.value === "start" && !config.value?.revision),
@@ -126,7 +141,10 @@ onUnmounted(() => abort?.abort());
     <p v-if="operation?.error" class="error" role="alert">
       {{ operation.error.message }}
     </p>
-    <p v-if="operation?.cleanupPending" class="notice">
+    <p
+      v-if="operation?.cleanupPending && operation.type !== 'delete'"
+      class="notice"
+    >
       Some resources may still be running. Use Stop to confirm they are stopped;
       persistent data is preserved.
     </p>
@@ -167,7 +185,9 @@ onUnmounted(() => abort?.abort());
         :key="config.id"
         :name="config.name"
         :generation-status="generation.status"
+        :deletion="deletionStatus"
         :disabled-reason="deleteDisabledReason"
+        @operation="deletion = $event"
         @deleting="deleting = $event"
         @deleted="removed"
       />

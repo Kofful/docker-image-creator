@@ -4,7 +4,7 @@ Implemented: owned MySQL configurations, immutable initial revisions, durable ge
 
 All routes use `/api/v1`, bearer access tokens, origin checks, and `Cache-Control: no-store`. Unauthorized access returns 401; another user's configuration or generation returns 404. Sessions are rechecked on each poll. Shared types are in `packages/contracts/src/index.ts`.
 
-The later [runtime API](runtime-api.md) adds explicit Start/Stop and operation/deployment polling without changing generation behavior. Its temporary deletion guard returns 409 when any deployment record exists, including a stopped deployment; the artifact-only deletion contract below otherwise remains unchanged. Runtime resource/data cleanup is a separate agreed follow-up.
+The later [runtime API](runtime-api.md) adds explicit Start/Stop and operation/deployment polling without changing generation behavior. For a stopped deployment, DELETE now returns 202 and delegates scoped container/network/artifact cleanup to the runner; see [runtime deletion](runtime-api.md#delete-a-stopped-configuration). Named volumes and recovery metadata are preserved. The immediate artifact-only contract below applies to never-started configurations.
 
 ## Submit once, then poll
 
@@ -52,6 +52,8 @@ The Vue client uses ten-second deadlines for individual HTTP requests, with **no
 
 ## Delete a configuration
 
+For configs with deployments, use the asynchronous [runtime deletion contract](runtime-api.md#delete-a-stopped-configuration): 202 for stopped deployments, 409 for active/unknown state or pending runtime actions, visible/retryable failures, and quota release only after verified cleanup. List/detail responses include `deletion` with the latest delete operation or null, allowing pending cleanup to resume after navigation. The following immediate 204 behavior applies only when no deployment exists.
+
 `DELETE /api/v1/configs/:id` returns **403 Forbidden** when the owned configuration has a queued or running generation attempt. Deletion does not cancel generation.
 
 Deletion sets `deletedAt` while retaining database records, including revision specifications and Compose text, generation attempts, and encrypted secrets. Deleted configurations disappear from lists; configuration detail and generation-status reads return 404. Local Compose artifacts and their configuration directory are physically removed using server-owned user/configuration IDs. There is no restore endpoint or database purge in this slice.
@@ -64,7 +66,7 @@ File publication holds the same configuration-row lock as deletion, verifies tha
 
 The Vue list offers a compact trash icon to the right of each configuration’s generation status; the detail page offers a Delete button. Both use a browser confirmation naming the configuration and explaining that it cannot be restored from the app. Buttons are disabled during queued/running generation and while a deletion request is pending. The list has a refresh action to update generation status; the detail page updates through its existing polling. A successful deletion removes the row from the list or returns from detail to the list. A 404 is treated as already removed. A 403 explains that generation is still in progress; network/server errors keep the configuration visible and allow retry. A delayed list refresh cannot restore a row deleted in that view.
 
-The [runtime UI follow-up](runtime-api.md#configuration-detail-ui) adds Start/Stop and a runtime label to detail. Delete is also disabled until runtime status is checked, during pending/unconfirmed runtime actions, and whenever a deployment exists, including after Stop or a failed Start. Its explanation identifies the missing runtime cleanup. Both deletion controls explain runtime-related 409 responses; the list retains generation status and its current actions.
+The [runtime UI follow-up](runtime-api.md#configuration-detail-ui) adds Start/Stop and a runtime label to detail. Delete is also disabled until runtime status is checked, during pending/unconfirmed runtime actions, and whenever a deployment is not verified stopped. Stopped configurations can be deleted through runner cleanup. Both deletion controls explain runtime-related 409 responses; the list retains generation status and its current actions.
 
 ## Worker, persistence and files
 

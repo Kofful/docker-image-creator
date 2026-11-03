@@ -46,7 +46,7 @@ Generate database passwords outside the model and encrypt them separately. Publi
 
 ## Next execution slice: manual deployments
 
-The [runtime API](runtime-api.md) implements Start/Stop/status, configuration-detail runtime controls, and a private runner included in the default Compose stack, subject to supported-host Docker verification. Run user services alongside application containers through that runner, as recorded in [ADR 0003](adr/0003-shared-host-execution.md), for trusted local accounts. Start launches a lasting deployment and checks template-specific readiness; Stop preserves data for the next Start. Generation still saves revisions without invoking Docker. Per-service status/log routes, cleanup, and terminals remain planned.
+The [runtime API](runtime-api.md) implements Start/Stop/status, configuration-detail runtime controls, and a private runner included in the default Compose stack, subject to supported-host Docker verification. Run user services alongside application containers through that runner, as recorded in [ADR 0003](adr/0003-shared-host-execution.md), for trusted local accounts. Start launches a lasting deployment and checks template-specific readiness; Stop preserves data for the next Start. Generation still saves revisions without invoking Docker. Deletion now removes stopped containers/networks/artifacts through the runner while preserving volumes. Per-service status/log routes, explicit persistent-data deletion, and terminals remain planned.
 
 Agreed lifecycle rules:
 
@@ -54,7 +54,7 @@ Agreed lifecycle rules:
 - Failed Start stops services launched by that attempt, preserves volumes and configuration files, and reports bounded diagnostics and any cleanup failures separately.
 - Running workloads survive API/runner restarts. Unexpected service exits or a host reboot require an explicit Start; report observed state without automatic relaunch.
 - Admit one running configuration per user with no global running-count quota. Keep the reservation through starting, stopping, partial, and unknown states until verifying all services stopped; retain per-service limits and bounded operation execution.
-- The accepted future Delete workflow rejects running services, removes stopped resources/artifacts, requires separate explicit data deletion for volumes, and stays visible/retryable until verified complete. The endpoint slice temporarily blocks artifact-only deletion whenever a deployment exists.
+- DELETE rejects active/unknown deployments and queues owned stopped-resource/artifact removal. Cleanup stays visible/retryable until verified complete, then releases saved-config quota. Named volumes and recovery metadata remain preserved; explicit persistent-data deletion is still a separate future action.
 
 Execution now recompiles existing saved specs without another generation call, applying the runtime policy, server-owned labels, stable volumes, and saved explicit ports. Immutable revisions remain unchanged; deployment manifests/digests are stored separately. Selected services/images/settings are preserved. Engine 28+ is required and the current Engine 27.1.2 is rejected; real supported-host network/readiness/data verification remains pending. Credential delivery and terminal limits remain console work.
 

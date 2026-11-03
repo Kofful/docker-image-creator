@@ -3,6 +3,7 @@ import type {
   CreateConfigRequest,
   CreateConfigResponse,
   GenerationResponse,
+  RuntimeAcceptedResponse,
 } from "@docker-image-creator/contracts";
 import { AuthError } from "../auth/session";
 
@@ -39,10 +40,20 @@ export function createConfigsClient(request: ApiRequest) {
   async function list(): Promise<ConfigResponse[]> {
     return (await request("/api/v1/configs")).json();
   }
-  async function remove(id: string): Promise<void> {
-    await request(`/api/v1/configs/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
+  async function remove(
+    id: string,
+    key: string,
+    signal?: AbortSignal,
+  ): Promise<RuntimeAcceptedResponse | null> {
+    const response = await request(
+      `/api/v1/configs/${encodeURIComponent(id)}`,
+      {
+        method: "DELETE",
+        headers: { "Idempotency-Key": key },
+        signal,
+      },
+    );
+    return response.status === 202 ? response.json() : null;
   }
   async function poll(
     id: string,

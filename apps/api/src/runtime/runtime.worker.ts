@@ -148,7 +148,11 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
               where: { configId: target.configId },
             });
             await tx.runtimeOperation.updateMany({
-              where: { id: deployment.operationId, status: "failed", type: { not: "delete" } },
+              where: {
+                id: deployment.operationId,
+                status: "failed",
+                type: { not: "delete" },
+              },
               data: { cleanupPending: false },
             });
           }
@@ -287,7 +291,14 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
           leaseToken: token,
           leaseExpiresAt: { gt: new Date() },
         },
-        data: { stage: job.type === "start" ? "starting" : job.type === "delete" ? "deleting" : "stopping" },
+        data: {
+          stage:
+            job.type === "start"
+              ? "starting"
+              : job.type === "delete"
+                ? "deleting"
+                : "stopping",
+        },
       });
       if (!fenced.count) throw new RuntimeFailure("INTERRUPTED");
       if (job.type === "start") await this.driver.start(target, abort.signal);
@@ -301,14 +312,20 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
       ready = observed.ready;
       if (job.type === "start" ? !ready : running)
         throw new RuntimeFailure(
-          job.type === "start" ? "START_FAILED" : "STOP_FAILED",
+          job.type === "start"
+            ? "START_FAILED"
+            : job.type === "delete"
+              ? "DELETE_FAILED"
+              : "STOP_FAILED",
         );
     } catch (error) {
       errorCode = abort.signal.aborted
         ? "INTERRUPTED"
         : error instanceof RuntimeFailure
           ? error.code
-          : "INVALID_REVISION";
+          : job.type === "delete" && target
+            ? "DELETE_FAILED"
+            : "INVALID_REVISION";
       if (target) {
         try {
           // On shutdown leave a possibly successful Start alone. Reconcile after lease expiry.

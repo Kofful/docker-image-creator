@@ -54,6 +54,7 @@ onMounted(load);
           :id="config.id"
           :name="config.name"
           :generation-status="config.generation.status"
+          :deletion="config.deletion"
           icon-only
           @deleted="removed(config.id)"
         />

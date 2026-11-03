@@ -62,8 +62,27 @@ export class ConfigsController {
   async delete(
     @Req() request: AuthenticatedRequest,
     @Param("id", new ParseUUIDPipe()) id: string,
-  ): Promise<void> {
-    await this.configs.delete(request.principal.user.id, id);
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const key = request.get("Idempotency-Key");
+    if (
+      key !== undefined &&
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
+        key,
+      )
+    )
+      throw new BadRequestException("Idempotency-Key must be a UUID");
+    const result = await this.configs.delete(
+      request.principal.user.id,
+      id,
+      key?.toLowerCase(),
+    );
+    if (result) {
+      response.status(202);
+      response.setHeader("Location", result.statusUrl);
+      response.setHeader("Retry-After", "2");
+    }
+    return result;
   }
   @Get("configs/:id")
   @Header("Cache-Control", "no-store")

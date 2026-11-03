@@ -26,7 +26,8 @@ const errors: Record<string, string> = {
   DOCKER_UNAVAILABLE:
     "The runner could not inspect Docker. Retry after it is available.",
   START_FAILED: "Services could not reach readiness. Data has been preserved.",
-  DELETE_FAILED: "Cleanup could not be completed. Persistent data is preserved. Retry Delete.",
+  DELETE_FAILED:
+    "Cleanup could not be completed. Persistent data is preserved. Retry Delete.",
   STOP_FAILED: "Services could not be verified stopped. Retry Stop.",
   INTERRUPTED:
     "Execution was interrupted. Inspect the deployment and retry explicitly.",
@@ -78,7 +79,9 @@ export class RuntimeService {
           });
           if (!config) throw new NotFoundException("Configuration not found");
           if (type === "start" && config.deletionRequestedAt)
-            throw new ConflictException("Deletion must finish before this configuration can be started");
+            throw new ConflictException(
+              "Deletion must finish before this configuration can be started",
+            );
           const previous = await tx.runtimeOperation.findUnique({
             where: { userId_requestKey: { userId, requestKey } },
           });
@@ -232,7 +235,11 @@ export class RuntimeService {
     id: string,
   ): Promise<RuntimeOperationResponse> {
     const row = await this.prisma.runtimeOperation.findFirst({
-      where: { id, userId, OR: [{ config: { deletedAt: null } }, { type: "delete" }] },
+      where: {
+        id,
+        userId,
+        OR: [{ config: { deletedAt: null } }, { type: "delete" }],
+      },
     });
     if (!row) throw new NotFoundException("Operation not found");
     return operationResponse(row);

@@ -55,6 +55,7 @@ function fixture() {
     Mounts: [] as { Type: string; Name: string; Destination: string }[],
   };
   const network = {
+    Containers: {} as Record<string, unknown>,
     Internal: true,
     Driver: "bridge",
     EnableIPv6: false,
@@ -63,15 +64,31 @@ function fixture() {
   };
   class Driver extends DockerRuntimeDriver {
     mutations: string[][] = [];
+    containerPresent = true;
+    networkPresent = true;
+    failNetworkRemoval = false;
     protected override async command(args: string[]): Promise<string> {
-      if (args[0] === "ps") return container.Id;
+      if (args[0] === "ps") return this.containerPresent ? container.Id : "";
       if (args[0] === "inspect") return JSON.stringify([container]);
-      if (args[0] === "network" && args[1] === "ls") return "b".repeat(64);
+      if (args[0] === "network" && args[1] === "ls")
+        return this.networkPresent ? "b".repeat(64) : "";
       if (args[0] === "network" && args[1] === "inspect")
         return JSON.stringify([network]);
       this.mutations.push(args);
       if (args[0] === "stop") {
         container.State.Running = false;
+        return "";
+      }
+      if (args[0] === "rm") {
+        assert.deepEqual(args, ["rm", container.Id]);
+        assert.equal(container.State.Running, false);
+        this.containerPresent = false;
+        return "";
+      }
+      if (args[0] === "network" && args[1] === "rm") {
+        if (this.failNetworkRemoval)
+          throw new RuntimeFailure("DOCKER_UNAVAILABLE");
+        this.networkPresent = false;
         return "";
       }
       throw new Error("Unexpected mutation");
@@ -138,6 +155,11 @@ for (const mutation of [
       (error: unknown) =>
         error instanceof RuntimeFailure && error.code === "RESOURCE_CONFLICT",
     );
+    f.container.State.Running = false;
+    await assert.rejects(
+      f.driver.remove(f.target, AbortSignal.timeout(1000)),
+      RuntimeFailure,
+    );
     assert.deepEqual(f.driver.mutations, []);
   });
 }
@@ -155,4 +177,56 @@ test("a network with disabled isolation or another owner is rejected", async () 
     RuntimeFailure,
   );
   assert.deepEqual(f.driver.mutations, []);
+});
+
+test("Delete removes only stopped containers and the owned network, preserves volumes, and is repeatable", async () => {
+  const f = fixture();
+  f.container.State.Running = false;
+  await f.driver.remove(f.target, AbortSignal.timeout(1000));
+  assert.deepEqual(f.driver.mutations, [
+    ["rm", f.container.Id],
+    ["network", "rm", "b".repeat(64)],
+  ]);
+  await f.driver.remove(f.target, AbortSignal.timeout(1000));
+  assert.equal(f.driver.mutations.length, 2);
+});
+test("Delete refuses running or restarting services without mutations", async () => {
+  for (const restarting of [false, true]) {
+    const f = fixture();
+    f.container.State.Running = !restarting;
+    f.container.State.Restarting = restarting;
+    await assert.rejects(
+      f.driver.remove(f.target, AbortSignal.timeout(1000)),
+      RuntimeFailure,
+    );
+    assert.deepEqual(f.driver.mutations, []);
+  }
+});
+test("Delete validates network ownership and foreign attachments before removing any container", async () => {
+  for (const foreignAttachment of [false, true]) {
+    const f = fixture();
+    f.container.State.Running = false;
+    if (foreignAttachment) f.network.Containers["c".repeat(64)] = {};
+    else f.network.Labels["docker-image-creator.user"] = randomUUID();
+    await assert.rejects(
+      f.driver.remove(f.target, AbortSignal.timeout(1000)),
+      RuntimeFailure,
+    );
+    assert.deepEqual(f.driver.mutations, []);
+  }
+});
+test("Delete resumes after partial removal and verifies the remaining network is absent", async () => {
+  const f = fixture();
+  f.container.State.Running = false;
+  f.driver.failNetworkRemoval = true;
+  await assert.rejects(
+    f.driver.remove(f.target, AbortSignal.timeout(1000)),
+    RuntimeFailure,
+  );
+  assert.equal(f.driver.containerPresent, false);
+  assert.equal(f.driver.networkPresent, true);
+  f.driver.failNetworkRemoval = false;
+  await f.driver.remove(f.target, AbortSignal.timeout(1000));
+  assert.equal(f.driver.networkPresent, false);
+  assert.equal(f.driver.mutations.filter((args) => args[0] === "rm").length, 1);
 });
