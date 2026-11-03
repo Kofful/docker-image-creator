@@ -1,5 +1,6 @@
 import type {
   DeploymentResponse,
+  ConfigServicesResponse,
   RuntimeAcceptedResponse,
   RuntimeOperationResponse,
 } from "@docker-image-creator/contracts";
@@ -32,6 +33,17 @@ export function createRuntimeClient(request: ApiRequest) {
     ).json();
   }
 
+  async function services(
+    id: string,
+    signal: AbortSignal,
+  ): Promise<ConfigServicesResponse> {
+    return (
+      await request(`/api/v1/configs/${encodeURIComponent(id)}/services`, {
+        signal,
+      })
+    ).json();
+  }
+
   async function submit(
     id: string,
     type: "start" | "stop",
@@ -52,5 +64,5 @@ export function createRuntimeClient(request: ApiRequest) {
     ).json();
   }
 
-  return { deployment, operation, submit };
+  return { deployment, operation, services, submit };
 }

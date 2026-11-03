@@ -45,9 +45,18 @@ describe("configuration views", () => {
   let wrapper: VueWrapper | undefined;
   beforeEach(() => {
     vi.stubGlobal("fetch", (path: RequestInfo | URL, init?: RequestInit) =>
-      typeof path === "string" && path.endsWith("/deployment")
-        ? Promise.resolve(json({}, 404))
-        : fetchMock(path, init),
+      typeof path === "string" && path.endsWith("/services")
+        ? Promise.resolve(
+            json({
+              configId: config.id,
+              revisionId: null,
+              operationId: null,
+              services: [],
+            }),
+          )
+        : typeof path === "string" && path.endsWith("/deployment")
+          ? Promise.resolve(json({}, 404))
+          : fetchMock(path, init),
     );
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(json(tokens()));

@@ -6,6 +6,8 @@ import {
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../database/prisma.service";
+import { Prisma } from "../generated/prisma/client";
+import type { ServiceRuntimeResponse } from "@docker-image-creator/contracts";
 import { ArtifactStore } from "../configs/artifact.store";
 import { SecretBox } from "../configs/secret-box";
 import { secretNames } from "../configs/compose.compiler";
@@ -15,6 +17,17 @@ import {
   RuntimeFailure,
   type RuntimeTarget,
 } from "./runtime.driver";
+
+function snapshot(services: ServiceRuntimeResponse[] | undefined) {
+  return (
+    services?.map((service) => ({
+      ...service,
+      publishedPort: service.publishedPort
+        ? { ...service.publishedPort }
+        : null,
+    })) ?? Prisma.DbNull
+  );
+}
 
 @Injectable()
 export class RuntimeSettings {
@@ -132,15 +145,19 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
           await tx.deployment.update({
             where: { configId: target.configId },
             data: {
-              state: state.ready
-                ? "running"
-                : state.running
-                  ? "failed"
-                  : "stopped",
+              state:
+                state.running === undefined
+                  ? "unknown"
+                  : state.ready
+                    ? "running"
+                    : state.running
+                      ? "failed"
+                      : "stopped",
               observedAt: new Date(),
+              serviceObservations: snapshot(state.services),
             },
           });
-          if (!state.running) {
+          if (state.running === false) {
             await tx.runtimeReservation.deleteMany({
               where: { configId: target.configId },
             });
@@ -164,7 +181,11 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
             configId: deployment.configId,
             operationId: deployment.operationId,
           },
-          data: { state: "unknown", observedAt: new Date() },
+          data: {
+            state: "unknown",
+            observedAt: new Date(),
+            serviceObservations: Prisma.DbNull,
+          },
         });
       }
     }
@@ -281,6 +302,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
     let cleanupPending = false;
     let running: boolean | undefined;
     let ready = false;
+    let services: ServiceRuntimeResponse[] | undefined;
     try {
       target = await this.target(id, job.type === "start");
       abort.signal.throwIfAborted();
@@ -310,7 +332,8 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
       const observed = await this.driver.observe(target, abort.signal);
       running = observed.running;
       ready = observed.ready;
-      if (job.type === "start" ? !ready : running)
+      services = observed.services;
+      if (job.type === "start" ? !ready : running !== false)
         throw new RuntimeFailure(
           job.type === "start"
             ? "START_FAILED"
@@ -341,8 +364,12 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
           );
           running = observed.running;
           ready = observed.ready;
-          cleanupPending = job.type === "delete" || running;
+          services = observed.services;
+          cleanupPending = job.type === "delete" || running !== false;
         } catch {
+          running = undefined;
+          ready = false;
+          services = undefined;
           cleanupPending = true;
         }
       } else cleanupPending = true;
@@ -390,6 +417,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
                   ? "failed"
                   : "stopped",
           observedAt: new Date(),
+          serviceObservations: snapshot(services),
         },
       });
       if (running === false) {

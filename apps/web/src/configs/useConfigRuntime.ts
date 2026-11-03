@@ -1,6 +1,7 @@
 import { computed, onScopeDispose, ref, shallowRef } from "vue";
 import type {
   DeploymentResponse,
+  ConfigServicesResponse,
   RuntimeOperationResponse,
 } from "@docker-image-creator/contracts";
 import { AuthError } from "../auth/session";
@@ -18,6 +19,9 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
   const checked = ref(false);
   const statusError = ref("");
   const actionError = ref("");
+  const services = shallowRef<ConfigServicesResponse | null>(null);
+  const servicesError = ref("");
+  const servicesLoading = ref(true);
   const submitting = ref<Action | null>(null);
   const accepted = shallowRef<{ id: string; type: Action } | null>(null);
   let retry:
@@ -34,6 +38,8 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   let failures = 0;
+  let serviceFailures = 0;
+  let retryServices = false;
 
   const pendingAction = computed(
     () =>
@@ -73,6 +79,7 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
   }
 
   async function check(signal: AbortSignal) {
+    servicesLoading.value = true;
     try {
       const next = await client.deployment(id, signal);
       const nextOperation = next
@@ -126,6 +133,34 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
         return;
       failures += 1;
     }
+    if (!signal.aborted && !statusError.value) {
+      try {
+        const next = await client.services(id, signal);
+        signal.throwIfAborted();
+        if (
+          next.configId !== id ||
+          next.revisionId !== (deployment.value?.revisionId ?? null) ||
+          next.operationId !== (deployment.value?.operationId ?? null) ||
+          !Array.isArray(next.services)
+        )
+          throw new Error("Container status does not match the deployment");
+        services.value = next;
+        servicesError.value = "";
+        serviceFailures = 0;
+        retryServices = false;
+      } catch (error) {
+        if (signal.aborted) return;
+        servicesError.value =
+          "Could not update container status. Previous observations may be stale.";
+        serviceFailures += 1;
+        retryServices = !(
+          error instanceof AuthError &&
+          error.status > 0 &&
+          error.status < 500 &&
+          error.status !== 429
+        );
+      }
+    }
     if (
       !signal.aborted &&
       operation.value?.type !== "delete" &&
@@ -133,12 +168,17 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
         deployment.value?.state === "starting" ||
         deployment.value?.state === "stopping" ||
         uncertain.value ||
-        statusError.value)
+        statusError.value ||
+        retryServices)
     )
       timer = setTimeout(
         () => void check(signal),
-        Math.min(30000, 2000 * 2 ** Math.min(failures, 4)),
+        Math.min(
+          30000,
+          2000 * 2 ** Math.min(Math.max(failures, serviceFailures), 4),
+        ),
       );
+    servicesLoading.value = false;
   }
 
   function refresh() {
@@ -209,6 +249,9 @@ export function useConfigRuntime(id: string, request: ApiRequest) {
     canAct,
     statusError,
     actionError,
+    services,
+    servicesError,
+    servicesLoading,
     deleteDisabledReason,
     refresh,
     submit,

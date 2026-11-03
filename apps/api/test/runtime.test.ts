@@ -16,6 +16,8 @@ import type {
   CreateConfigResponse,
   RuntimeAcceptedResponse,
   RuntimeOperationResponse,
+  ServiceRuntimeResponse,
+  ConfigServicesResponse,
 } from "@docker-image-creator/contracts";
 import { AppModule } from "../src/app.module";
 import { configureApp } from "../src/configure-app";
@@ -37,9 +39,10 @@ import {
   revisionServices,
   runtimeManifest,
 } from "../src/runtime/runtime.manifest";
+import { unknownService } from "../src/runtime/runtime.observations";
 
 class ControlledDriver extends RuntimeDriver {
-  states = new Map<string, { running: boolean; ready: boolean }>();
+  states = new Map<string, { running: boolean | undefined; ready: boolean }>();
   targets: RuntimeTarget[] = [];
   failStart = false;
   failStop = false;
@@ -53,6 +56,7 @@ class ControlledDriver extends RuntimeDriver {
     this.states.delete(target.configId);
   }
   unavailable = false;
+  observations = new Map<string, ServiceRuntimeResponse[]>();
   async start(target: RuntimeTarget, signal: AbortSignal) {
     signal.throwIfAborted();
     this.targets.push({ ...target });
@@ -67,7 +71,36 @@ class ControlledDriver extends RuntimeDriver {
   async observe(target: RuntimeTarget, signal: AbortSignal) {
     signal.throwIfAborted();
     if (this.unavailable) throw new RuntimeFailure("DOCKER_UNAVAILABLE");
-    return this.states.get(target.configId) ?? { running: false, ready: false };
+    const state = this.states.get(target.configId);
+    return {
+      ...(state ?? { running: false, ready: false }),
+      services:
+        this.observations.get(target.configId) ??
+        target.services.map(
+          (service): ServiceRuntimeResponse => ({
+            ...unknownService(service),
+            state: !state
+              ? "not_created"
+              : state.running
+                ? "running"
+                : "exited",
+            health: state?.ready
+              ? "healthy"
+              : state?.running
+                ? "unhealthy"
+                : null,
+            publishedPort:
+              state?.running && service.hostPort !== undefined
+                ? {
+                    host: "127.0.0.1",
+                    hostPort: service.hostPort,
+                    containerPort: 8000,
+                  }
+                : null,
+            observedAt: new Date().toISOString(),
+          }),
+        ),
+    };
   }
 }
 let app: INestApplication;
@@ -260,6 +293,161 @@ test("Start returns a durable 202 before execution; runner prepares private secr
     .expect(409);
 });
 
+test("service observations are owner-scoped, read-only, and unknown before the runner observes resources", async () => {
+  const config = await saved(auth, 8081);
+  const path = `/api/v1/configs/${config.id}/services`;
+  await request(app.getHttpServer()).get(path).expect(401);
+  const other = await register();
+  await request(app.getHttpServer())
+    .get(path)
+    .auth(other.access_token, { type: "bearer" })
+    .expect(404);
+  const response = await request(app.getHttpServer())
+    .get(path)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(200);
+  const body = response.body as ConfigServicesResponse;
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(body.configId, config.id);
+  assert.equal(body.revisionId, null);
+  assert.deepEqual(
+    body.services.map((row) => [
+      row.name,
+      row.image,
+      row.state,
+      row.publishedPort,
+      row.observedAt,
+    ]),
+    [
+      ["web", "node:22.23.4-bookworm-slim", "unknown", null, null],
+      ["db", "mysql:8.4.11", "unknown", null, null],
+    ],
+  );
+  assert.equal(
+    await prisma.deployment.count({ where: { configId: config.id } }),
+    0,
+  );
+  assert.equal(driver.targets.length, 0);
+  await request(app.getHttpServer())
+    .delete(`/api/v1/configs/${config.id}`)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(204);
+  await request(app.getHttpServer())
+    .get(path)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(404);
+});
+
+test("runner persists service observations through Start, partial health, unknown inspection, recovery, and Stop", async () => {
+  const config = await saved(auth, 8081);
+  const path = `/api/v1/configs/${config.id}/services`;
+  const get = async () =>
+    (
+      await request(app.getHttpServer())
+        .get(path)
+        .auth(auth.access_token, { type: "bearer" })
+        .expect(200)
+    ).body as ConfigServicesResponse;
+  const started = (await start(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(started.operationId)).status, "succeeded");
+  const running = await get();
+  assert.equal(running.revisionId, config.revision!.id);
+  assert.equal(running.operationId, started.operationId);
+  assert.equal(running.services[0]?.state, "running");
+  assert.equal(running.services[0]?.health, "healthy");
+  assert.deepEqual(running.services[0]?.publishedPort, {
+    host: "127.0.0.1",
+    hostPort: 8081,
+    containerPort: 8000,
+  });
+  assert.ok(running.services[0]?.observedAt);
+  driver.states.set(config.id, { running: true, ready: false });
+  driver.observations.set(config.id, [
+    { ...running.services[0]!, health: "unhealthy" },
+    unknownService({ name: "db", image: "mysql", type: "database" }),
+  ]);
+  await worker.tick();
+  const partial = await get();
+  assert.equal(partial.services[0]?.state, "running");
+  assert.equal(partial.services[0]?.health, "unhealthy");
+  assert.equal(partial.services[1]?.state, "unknown");
+  assert.equal(
+    await prisma.runtimeReservation.count({ where: { configId: config.id } }),
+    1,
+  );
+  driver.states.set(config.id, { running: undefined, ready: false });
+  driver.observations.set(config.id, config.services.map(unknownService));
+  await worker.tick();
+  assert.equal(
+    (await get()).services.every((row) => row.state === "unknown"),
+    true,
+  );
+  assert.equal(
+    (
+      await prisma.deployment.findUniqueOrThrow({
+        where: { configId: config.id },
+      })
+    ).state,
+    "unknown",
+  );
+  assert.equal(
+    await prisma.runtimeReservation.count({ where: { configId: config.id } }),
+    1,
+  );
+  driver.unavailable = true;
+  await worker.tick();
+  assert.equal(
+    (await get()).services.every((row) => row.observedAt === null),
+    true,
+  );
+  driver.unavailable = false;
+  driver.observations.delete(config.id);
+  const stopped = (await stop(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  assert.equal((await finish(stopped.operationId)).status, "succeeded");
+  const final = await get();
+  assert.equal(final.operationId, stopped.operationId);
+  assert.equal(
+    final.services.every(
+      (row) => row.state === "exited" && row.publishedPort === null,
+    ),
+    true,
+  );
+});
+
+test("service responses select safe fields and discard malformed or mismatched observations", async () => {
+  const config = await saved();
+  const started = (await start(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await worker.tick();
+  await finish(started.operationId);
+  const target = driver.targets[0]!;
+  const good = (await driver.observe(target, AbortSignal.timeout(1000)))
+    .services;
+  await prisma.deployment.update({
+    where: { configId: config.id },
+    data: {
+      serviceObservations: [
+        { ...good[0]!, Id: "private-id", Env: ["PASSWORD=private-value"] },
+        { ...good[1]!, image: "foreign:latest" },
+        { ...good[0]!, name: "unrequested" },
+      ],
+    },
+  });
+  const result = await request(app.getHttpServer())
+    .get(`/api/v1/configs/${config.id}/services`)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(200);
+  assert.equal(result.body.services.length, 2);
+  assert.equal(result.body.services[0].state, "running");
+  assert.equal(result.body.services[1].state, "unknown");
+  assert.ok(!JSON.stringify(result.body).includes("private"));
+  assert.ok(!JSON.stringify(result.body).includes("unrequested"));
+});
+
 test("simultaneous Start replay creates one operation; changing its target rejects key reuse", async () => {
   const first = await saved();
   const second = await saved();
@@ -429,6 +617,10 @@ test("ownership, revocation, origin, nested revisions, and malformed payloads ca
     .auth(auth.access_token, { type: "bearer" })
     .expect(204);
   await start(config).expect(401);
+  await request(app.getHttpServer())
+    .get(`/api/v1/configs/${config.id}/services`)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(401);
 });
 
 test("failed readiness rolls back partial startup, preserves encrypted data/revisions, and releases the slot only after verified stop", async () => {
@@ -988,7 +1180,15 @@ test("real Docker Delete removes only its stopped containers/network and preserv
       "mysql:8.4.11",
     ]);
     const live = new DockerRuntimeDriver();
+    const created = await live.observe(target, AbortSignal.timeout(15000));
+    assert.equal(created.running, false);
+    assert.equal(created.services[0]?.state, "created");
+    assert.equal(created.services[0]?.image, "mysql:8.4.11");
+    assert.ok(created.services[0]?.observedAt);
     await live.remove(target, AbortSignal.timeout(15000));
+    const removed = await live.observe(target, AbortSignal.timeout(15000));
+    assert.equal(removed.running, false);
+    assert.equal(removed.services[0]?.state, "not_created");
     assert.equal(
       docker([
         "ps",

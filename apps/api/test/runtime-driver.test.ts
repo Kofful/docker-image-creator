@@ -41,7 +41,12 @@ function fixture() {
         "com.docker.compose.service": "web",
       },
     },
-    State: { Running: true, Restarting: false, Health: { Status: "healthy" } },
+    State: {
+      Status: "running",
+      Running: true,
+      Restarting: false,
+      Health: { Status: "healthy" },
+    },
     NetworkSettings: { Networks: { [`dic-${configId}_stack`]: {} }, Ports: {} },
     HostConfig: {
       Privileged: false,
@@ -67,9 +72,18 @@ function fixture() {
     containerPresent = true;
     networkPresent = true;
     failNetworkRemoval = false;
+    failInspection = false;
     protected override async command(args: string[]): Promise<string> {
-      if (args[0] === "ps") return this.containerPresent ? container.Id : "";
-      if (args[0] === "inspect") return JSON.stringify([container]);
+      if (args[0] === "ps")
+        return this.containerPresent
+          ? args.includes("--format")
+            ? `${container.Id}\tweb`
+            : container.Id
+          : "";
+      if (args[0] === "inspect") {
+        if (this.failInspection) throw new RuntimeFailure("DOCKER_UNAVAILABLE");
+        return JSON.stringify([container]);
+      }
       if (args[0] === "network" && args[1] === "ls")
         return this.networkPresent ? "b".repeat(64) : "";
       if (args[0] === "network" && args[1] === "inspect")
@@ -77,6 +91,7 @@ function fixture() {
       this.mutations.push(args);
       if (args[0] === "stop") {
         container.State.Running = false;
+        container.State.Status = "exited";
         return "";
       }
       if (args[0] === "rm") {
@@ -98,28 +113,105 @@ function fixture() {
 }
 test("an owned, healthy deployment is observable without any mutation", async () => {
   const f = fixture();
-  assert.deepEqual(
-    await f.driver.observe(f.target, AbortSignal.timeout(1000)),
-    { running: true, ready: true },
-  );
+  const observed = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.equal(observed.running, true);
+  assert.equal(observed.ready, true);
+  assert.equal(observed.services[0]?.state, "running");
+  assert.equal(observed.services[0]?.image, "node:22.23.4-bookworm-slim");
+  assert.equal(observed.services[0]?.health, "healthy");
   assert.deepEqual(f.driver.mutations, []);
 });
 test("Docker's CAP_NET_RAW spelling permits readiness and Stop", async () => {
   const f = fixture();
   // Engine inspect normalizes the manifest's NET_RAW to CAP_NET_RAW.
   f.container.HostConfig.CapDrop = ["CAP_NET_RAW"];
-  assert.deepEqual(
-    await f.driver.observe(f.target, AbortSignal.timeout(1000)),
-    { running: true, ready: true },
+  assert.equal(
+    (await f.driver.observe(f.target, AbortSignal.timeout(1000))).ready,
+    true,
   );
   await f.driver.stop(f.target, AbortSignal.timeout(1000));
   assert.deepEqual(f.driver.mutations, [
     ["stop", "--time", "30", f.container.Id],
   ]);
-  assert.deepEqual(
-    await f.driver.observe(f.target, AbortSignal.timeout(1000)),
-    { running: false, ready: false },
+  const stopped = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.equal(stopped.running, false);
+  assert.equal(stopped.ready, false);
+  assert.equal(stopped.services[0]?.state, "exited");
+});
+
+test("service summaries distinguish verified absence, exited, and unhealthy running containers", async () => {
+  const f = fixture();
+  f.driver.containerPresent = false;
+  let observed = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.equal(observed.services[0]?.state, "not_created");
+  assert.ok(observed.services[0]?.observedAt);
+  assert.equal(observed.running, false);
+  f.driver.containerPresent = true;
+  f.container.State.Running = false;
+  f.container.State.Status = "exited";
+  observed = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.equal(observed.services[0]?.state, "exited");
+  assert.equal(observed.running, false);
+  f.container.State.Running = true;
+  f.container.State.Status = "running";
+  f.container.State.Health.Status = "unhealthy";
+  observed = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.equal(observed.services[0]?.state, "running");
+  assert.equal(observed.services[0]?.health, "unhealthy");
+  assert.equal(observed.running, true);
+  assert.equal(observed.ready, false);
+});
+
+test("an inspection failure is unknown, cannot prove stopped, and does not expose raw inspect fields", async () => {
+  const f = fixture();
+  Object.assign(f.container.Config, { Env: ["PASSWORD=private-value"] });
+  f.target.services[0]!.hostPort = 8081;
+  f.container.NetworkSettings.Ports = {
+    "8000/tcp": [{ HostIp: "127.0.0.1", HostPort: "8081" }],
+  };
+  const good = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.deepEqual(good.services[0]?.publishedPort, {
+    host: "127.0.0.1",
+    hostPort: 8081,
+    containerPort: 8000,
+  });
+  assert.ok(!JSON.stringify(good).includes("private-value"));
+  assert.ok(!JSON.stringify(good).includes(f.container.Id));
+  f.driver.failInspection = true;
+  const failed = await f.driver.observe(f.target, AbortSignal.timeout(1000));
+  assert.equal(failed.running, undefined);
+  assert.equal(failed.ready, false);
+  assert.equal(failed.services[0]?.state, "unknown");
+  assert.equal(failed.services[0]?.publishedPort, null);
+  assert.equal(failed.services[0]?.observedAt, null);
+});
+
+test("one failed service inspection retains independently validated service results", async () => {
+  const f = fixture();
+  f.target.services.push({ name: "worker", image: "python", type: "code" });
+  class PartialDriver extends DockerRuntimeDriver {
+    protected override async command(args: string[]): Promise<string> {
+      if (args[0] === "ps")
+        return `${f.container.Id}\tweb\n${"c".repeat(64)}\tworker`;
+      if (args[0] === "inspect") {
+        if (args[1] !== f.container.Id)
+          throw new RuntimeFailure("DOCKER_UNAVAILABLE");
+        return JSON.stringify([f.container]);
+      }
+      if (args[1] === "ls") return "b".repeat(64);
+      if (args[1] === "inspect") return JSON.stringify([f.network]);
+      throw new Error("Unexpected command");
+    }
+  }
+  const result = await new PartialDriver().observe(
+    f.target,
+    AbortSignal.timeout(1000),
   );
+  assert.equal(result.services[0]?.state, "running");
+  assert.equal(result.services[0]?.health, "healthy");
+  assert.equal(result.services[1]?.state, "unknown");
+  assert.equal(result.running, true);
+  assert.equal(result.ready, false);
 });
 for (const mutation of [
   "owner",

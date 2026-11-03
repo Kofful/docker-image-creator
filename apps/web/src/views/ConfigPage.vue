@@ -9,6 +9,7 @@ import type {
 import { useAuthStore } from "../auth/store";
 import { createConfigsClient } from "../configs/client";
 import DeleteConfigButton from "../configs/DeleteConfigButton.vue";
+import ConfigContainers from "../configs/ConfigContainers.vue";
 import { useConfigRuntime } from "../configs/useConfigRuntime";
 const route = useRoute();
 const router = useRouter();
@@ -21,6 +22,9 @@ const {
   canAct,
   statusError,
   actionError,
+  services,
+  servicesError,
+  servicesLoading,
   deleteDisabledReason,
   refresh: refreshRuntime,
   submit,
@@ -73,6 +77,13 @@ const actionDisabled = computed(
     generating.value ||
     ["starting", "stopping"].includes(state.value) ||
     (action.value === "start" && !config.value?.revision),
+);
+const containerError = computed(
+  () =>
+    servicesError.value ||
+    (statusError.value
+      ? "Could not update container status. Previous observations may be stale."
+      : ""),
 );
 function runAction() {
   if (actionDisabled.value) return;
@@ -161,6 +172,15 @@ onUnmounted(() => abort?.abort());
     <p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <button v-if="error" type="button" @click="load">Retry status check</button>
+    <ConfigContainers
+      v-if="config"
+      :configured-services="config.services"
+      :snapshot="services"
+      :error="containerError"
+      :loading="!services && servicesLoading && !statusError"
+      :pending="!!pendingAction"
+      @retry="refreshRuntime"
+    />
     <template v-if="config?.revision">
       <p class="notice">
         Compose saved. Generated with the development provider; Docker runtime

@@ -175,6 +175,7 @@ model Deployment {
   manifest    String          @db.MediumText
   digest      String          @db.Char(64)
   observedAt  DateTime?       @map("observed_at") @db.DateTime(3)
+  serviceObservations Json?   @map("service_observations")
   config      Configuration   @relation(fields: [configId], references: [id], onDelete: Restrict)
   revision    ConfigRevision  @relation(fields: [revisionId], references: [id], onDelete: Restrict)
 

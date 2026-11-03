@@ -6,7 +6,7 @@ Status: Vue/Nest, MySQL authentication, durable fake generation, private saved r
 
 The [configuration API](configuration-api.md) documents implemented creation, background generation, polling, persistence, file storage, and soft deletion with durable artifact cleanup.
 
-The [runtime API](runtime-api.md) documents the implemented configuration Start/Stop endpoints, operation polling, per-user admission, and default private runner service. Stopped deployments use asynchronous runner cleanup before the configuration is hidden; persistent database data remains preserved.
+The [runtime API](runtime-api.md) documents the implemented configuration Start/Stop endpoints, operation polling, per-user admission, default private runner service, and per-service Containers table on configuration detail. Container observations refresh on page entry and through lifecycle operations, then stop fetching when settled. Stopped deployments use asynchronous runner cleanup before the configuration is hidden; persistent database data remains preserved.
 
 For automatic UI/API reloads in Docker, use the [development setup](local-setup.md#develop-in-docker-with-automatic-reload).
 

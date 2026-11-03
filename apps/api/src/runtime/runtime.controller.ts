@@ -103,4 +103,12 @@ export class RuntimeController {
   ) {
     return this.runtime.deployment(request.principal.user.id, id);
   }
+  @Get("configs/:id/services")
+  @Header("Cache-Control", "no-store")
+  services(
+    @Req() request: AuthenticatedRequest,
+    @Param("id", new ParseUUIDPipe()) id: string,
+  ) {
+    return this.runtime.services(request.principal.user.id, id);
+  }
 }

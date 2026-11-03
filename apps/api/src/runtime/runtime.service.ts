@@ -7,6 +7,7 @@ import {
 import { randomUUID } from "node:crypto";
 import type {
   ConfigServiceInput,
+  ConfigServicesResponse,
   DeploymentResponse,
   RuntimeAcceptedResponse,
   RuntimeOperationResponse,
@@ -14,7 +15,8 @@ import type {
 import { PrismaService } from "../database/prisma.service";
 import type { RuntimeOperation } from "../generated/prisma/client";
 import { Prisma } from "../generated/prisma/client";
-import { compileCompose } from "../configs/compose.compiler";
+import { compileCompose, parseCandidate } from "../configs/compose.compiler";
+import { serviceObservations } from "./runtime.observations";
 import { digest, revisionServices, runtimeManifest } from "./runtime.manifest";
 
 const errors: Record<string, string> = {
@@ -202,6 +204,9 @@ export class RuntimeService {
               ...(type === "start"
                 ? {
                     revisionId: revision.id,
+                    ...(deployment?.revisionId !== revision.id
+                      ? { serviceObservations: Prisma.DbNull, observedAt: null }
+                      : {}),
                     manifest,
                     digest: digest(manifest),
                     state: "starting" as const,
@@ -258,6 +263,30 @@ export class RuntimeService {
       state: row.state,
       operationId: row.operationId,
       observedAt: row.observedAt?.toISOString() ?? null,
+    };
+  }
+
+  async services(
+    userId: string,
+    configId: string,
+  ): Promise<ConfigServicesResponse> {
+    const config = await this.prisma.configuration.findFirst({
+      where: { id: configId, userId, deletedAt: null },
+      include: { deployment: { include: { revision: true } } },
+    });
+    if (!config) throw new NotFoundException("Configuration not found");
+    const deployment = config.deployment;
+    const services = deployment
+      ? revisionServices(deployment.revision.spec)
+      : parseCandidate(
+          JSON.stringify({ schemaVersion: 1, services: config.services }),
+          config.services as unknown as ConfigServiceInput[],
+        );
+    return {
+      configId: config.id,
+      revisionId: deployment?.revisionId ?? null,
+      operationId: deployment?.operationId ?? null,
+      services: serviceObservations(services, deployment?.serviceObservations),
     };
   }
 }

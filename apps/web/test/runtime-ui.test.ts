@@ -6,6 +6,7 @@ import type {
   ConfigResponse,
   DeploymentResponse,
   RuntimeOperationResponse,
+  ServiceRuntimeResponse,
 } from "@docker-image-creator/contracts";
 import App from "../src/App.vue";
 import { createAppRouter } from "../src/router";
@@ -16,7 +17,10 @@ const config: ConfigResponse = {
   id: "config-one",
   name: "My starter",
   description: "",
-  services: [],
+  services: [
+    { name: "web", image: "node", type: "code", hostPort: 8081 },
+    { name: "db", image: "mysql", type: "database" },
+  ],
   generation: {
     id: "generation-one",
     configId: "config-one",
@@ -43,6 +47,7 @@ describe("configuration runtime controls", () => {
   let wrapper: VueWrapper | undefined;
   let deployment: DeploymentResponse | null;
   let operation: RuntimeOperationResponse;
+  let serviceRows: ServiceRuntimeResponse[];
   const fetchMock = vi.fn<typeof fetch>();
 
   function setDeployment(state: DeploymentResponse["state"]) {
@@ -58,6 +63,17 @@ describe("configuration runtime controls", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     deployment = null;
+    serviceRows = config.services.map((service) => ({
+      name: service.name,
+      image:
+        service.image === "node"
+          ? "node:22.23.4-bookworm-slim"
+          : "mysql:8.4.11",
+      state: "unknown",
+      health: null,
+      publishedPort: null,
+      observedAt: null,
+    }));
     operation = {
       id: "operation-one",
       configId: config.id,
@@ -76,6 +92,13 @@ describe("configuration runtime controls", () => {
       if (path === "/api/v1/configs/config-one") return json(config);
       if (path === "/api/v1/configs/config-one/deployment")
         return deployment ? json(deployment) : json({}, 404);
+      if (path === "/api/v1/configs/config-one/services")
+        return json({
+          configId: config.id,
+          revisionId: deployment?.revisionId ?? null,
+          operationId: deployment?.operationId ?? null,
+          services: serviceRows,
+        });
       if (
         path === "/api/v1/operations/operation-one" ||
         path === "/api/v1/operations/operation-two"
@@ -117,6 +140,195 @@ describe("configuration runtime controls", () => {
         String(init.body) !== JSON.stringify(credentials),
     );
   }
+
+  function setServiceStates(...states: ServiceRuntimeResponse["state"][]) {
+    serviceRows = serviceRows.map((row, index) => ({
+      ...row,
+      state: states[index] ?? "unknown",
+      health: states[index] === "running" ? "healthy" : null,
+      publishedPort:
+        row.name === "web" && states[index] === "running"
+          ? { host: "127.0.0.1", hostPort: 8081, containerPort: 8000 }
+          : null,
+      observedAt:
+        states[index] && states[index] !== "unknown"
+          ? "2026-11-03T00:00:02.000Z"
+          : null,
+    }));
+  }
+
+  it("lists all configured services with image tags and unknown state before observation", async () => {
+    await open();
+    const section = wrapper!.get(".containers");
+    expect(section.get("h2").text()).toBe("Containers");
+    expect(section.findAll("tbody tr")).toHaveLength(2);
+    expect(section.get('[data-service="web"]').text()).toContain(
+      "node:22.23.4-bookworm-slim",
+    );
+    expect(section.get('[data-service="db"]').text()).toContain("mysql:8.4.11");
+    expect(section.get('[data-service="web"] .container-state').text()).toBe(
+      "Unknown",
+    );
+    expect(section.text()).not.toContain("8081");
+    expect(section.findAll("button")).toHaveLength(0);
+    const request = fetchMock.mock.calls.find(([path]) =>
+      String(path).endsWith("/services"),
+    );
+    expect(new Headers(request?.[1]?.headers).get("Authorization")).toMatch(
+      /^Bearer /,
+    );
+  });
+
+  it("keeps running/unhealthy, exited, and verified absence independent of the aggregate status", async () => {
+    setDeployment("failed");
+    setServiceStates("running", "exited");
+    serviceRows[0]!.health = "unhealthy";
+    await open();
+    const web = wrapper!.get('[data-service="web"]');
+    expect(wrapper!.get(".runtime-status").text()).toBe("Failed");
+    expect(web.get(".container-state").text()).toBe("Running");
+    expect(web.get('[data-health="unhealthy"]').text()).toBe("Unhealthy");
+    expect(web.text()).toContain("127.0.0.1:8081 → 8000/tcp");
+    expect(web.get("time").attributes("datetime")).toBe(
+      "2026-11-03T00:00:02.000Z",
+    );
+    expect(wrapper!.get('[data-service="db"] .container-state').text()).toBe(
+      "Exited",
+    );
+    wrapper!.unmount();
+    wrapper = undefined;
+    setServiceStates("not_created", "unknown");
+    await open();
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Not created",
+    );
+    expect(wrapper!.get('[data-service="db"] .container-state').text()).toBe(
+      "Unknown",
+    );
+  });
+
+  it("retains good service observations when another service is unknown and stops idle fetching", async () => {
+    setDeployment("failed");
+    setServiceStates("running", "unknown");
+    await open();
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Running",
+    );
+    expect(wrapper!.get('[data-service="db"] .container-state').text()).toBe(
+      "Unknown",
+    );
+    expect(wrapper!.get(".containers").text()).toContain(
+      "unavailable for one or more services",
+    );
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+  });
+
+  it("shows Unknown after an initial services API failure and supports manual retry without changing lifecycle controls", async () => {
+    setDeployment("running");
+    setServiceStates("running", "running");
+    const base = fetchMock.getMockImplementation()!;
+    let offline = true;
+    fetchMock.mockImplementation(async (path, init) => {
+      if (String(path).endsWith("/services") && offline) return json({}, 503);
+      return base(path, init);
+    });
+    await open();
+    expect(wrapper!.get(".runtime-status").text()).toBe("Running");
+    expect(actionButton().text()).toBe("Stop");
+    expect(actionButton().attributes("disabled")).toBeUndefined();
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Unknown",
+    );
+    expect(wrapper!.get(".containers").text()).toContain(
+      "Could not update container status",
+    );
+    offline = false;
+    await wrapper!.get(".containers button").trigger("click");
+    await flushPromises();
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Running",
+    );
+    expect(wrapper!.get(".containers").text()).not.toContain(
+      "Could not update",
+    );
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+  });
+
+  it("retains stale rows during operation-time API failure and resumes with the final Stop observation", async () => {
+    setDeployment("running");
+    setServiceStates("running", "running");
+    await open();
+    const base = fetchMock.getMockImplementation()!;
+    let offline = true;
+    operation = {
+      ...operation,
+      id: "operation-two",
+      type: "stop",
+      status: "running",
+    };
+    setDeployment("stopping");
+    fetchMock.mockImplementation(async (path, init) => {
+      if (String(path).endsWith("/stop"))
+        return json({ operationId: operation.id, pollAfterMs: 2000 }, 202);
+      if (String(path).endsWith("/services") && offline) return json({}, 503);
+      return base(path, init);
+    });
+    await actionButton().trigger("click");
+    await flushPromises();
+    expect(wrapper!.get('[data-service="web"]').text()).toContain("Stale");
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Running",
+    );
+    expect(actionButton().text()).toBe("Stopping…");
+    offline = false;
+    operation = { ...operation, status: "succeeded" };
+    setDeployment("stopped");
+    setServiceStates("exited", "exited");
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Exited",
+    );
+    expect(wrapper!.get(".containers").text()).not.toContain("Stale");
+    expect(wrapper!.get(".containers").text()).not.toContain("8081");
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+  });
+
+  it("rejects observations for a different applied revision and cancels their recovery on navigation", async () => {
+    setDeployment("running");
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (path, init) =>
+      String(path).endsWith("/services")
+        ? json({
+            configId: config.id,
+            revisionId: "another-revision",
+            operationId: operation.id,
+            services: [],
+          })
+        : base(path, init),
+    );
+    const router = await open();
+    expect(wrapper!.get(".containers").text()).toContain(
+      "Could not update container status",
+    );
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Unknown",
+    );
+    const signal = fetchMock.mock.calls.find(([path]) =>
+      String(path).endsWith("/services"),
+    )?.[1]?.signal;
+    await router.push("/configs");
+    await flushPromises();
+    expect(signal?.aborted).toBe(true);
+    const count = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(fetchMock.mock.calls).toHaveLength(count);
+  });
 
   it("shows an enabled Start to the left of Delete for a never-started config", async () => {
     await open();
@@ -221,9 +433,13 @@ describe("configuration runtime controls", () => {
     expect(wrapper!.text()).toContain("Runtime operation: queued");
     operation = { ...operation, status: "succeeded", stage: "complete" };
     setDeployment("running");
+    setServiceStates("running", "running");
     await vi.advanceTimersByTimeAsync(2000);
     expect(wrapper!.get(".runtime-status").text()).toBe("Running");
     expect(actionButton().text()).toBe("Stop");
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Running",
+    );
     const afterStart = fetchMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(30000);
     expect(fetchMock.mock.calls).toHaveLength(afterStart);
@@ -256,9 +472,13 @@ describe("configuration runtime controls", () => {
     ).not.toBe(headers.get("Idempotency-Key"));
     operation = { ...operation, status: "succeeded", stage: "complete" };
     setDeployment("stopped");
+    setServiceStates("exited", "exited");
     await vi.advanceTimersByTimeAsync(2000);
     expect(wrapper!.get(".runtime-status").text()).toBe("Stopped");
     expect(actionButton().text()).toBe("Start");
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Exited",
+    );
     expect(deleteButton().attributes("disabled")).toBeUndefined();
     const afterStop = fetchMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(30000);
@@ -292,9 +512,16 @@ describe("configuration runtime controls", () => {
       await open();
       operation = { ...operation, status: "succeeded" };
       setDeployment(final);
+      setServiceStates(
+        final === "running" ? "running" : "exited",
+        final === "running" ? "running" : "exited",
+      );
       await vi.advanceTimersByTimeAsync(2000);
       expect(wrapper!.get(".runtime-status").attributes("data-state")).toBe(
         final,
+      );
+      expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+        final === "running" ? "Running" : "Exited",
       );
       const count = fetchMock.mock.calls.length;
       await vi.advanceTimersByTimeAsync(60000);
@@ -314,6 +541,7 @@ describe("configuration runtime controls", () => {
       },
     };
     setDeployment("stopped");
+    setServiceStates("exited", "not_created");
     fetchMock.mockResolvedValueOnce(
       json({ operationId: operation.id, pollAfterMs: 2000 }, 202),
     );
@@ -321,6 +549,12 @@ describe("configuration runtime controls", () => {
     await flushPromises();
     expect(wrapper!.get(".runtime-status").text()).toBe("Stopped");
     expect(wrapper!.text()).toContain("Services could not reach readiness");
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Exited",
+    );
+    expect(wrapper!.get('[data-service="db"] .container-state').text()).toBe(
+      "Not created",
+    );
     expect(actionButton().text()).toBe("Start");
     operation = {
       ...operation,
@@ -381,18 +615,26 @@ describe("configuration runtime controls", () => {
       },
     };
     setDeployment("unknown");
+    setServiceStates("running", "unknown");
     await open();
     expect(actionButton().text()).toBe("Stop");
     expect(wrapper!.text()).toContain("Some resources may still be running");
     expect(wrapper!.text()).toContain("Retry Stop");
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Running",
+    );
     fetchMock.mockResolvedValueOnce(
       json({ operationId: operation.id, pollAfterMs: 2000 }, 202),
     );
     operation = { ...operation, cleanupPending: false };
     setDeployment("stopped");
+    setServiceStates("exited", "exited");
     await actionButton().trigger("click");
     await flushPromises();
     expect(actionButton().text()).toBe("Start");
+    expect(wrapper!.get('[data-service="web"] .container-state').text()).toBe(
+      "Exited",
+    );
     expect(wrapper!.text()).not.toContain(
       "Some resources may still be running",
     );

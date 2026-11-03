@@ -3,9 +3,13 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ConfigServiceInput } from "@docker-image-creator/contracts";
+import type {
+  ConfigServiceInput,
+  ServiceRuntimeResponse,
+} from "@docker-image-creator/contracts";
 import { CATALOG } from "../configs/compose.compiler";
 import { runtimeLabels } from "./runtime.manifest";
+import { containerStates, unknownService } from "./runtime.observations";
 
 export class RuntimeFailure extends Error {
   constructor(readonly code: string) {
@@ -21,8 +25,9 @@ export interface RuntimeTarget {
   secrets: Record<string, string>;
 }
 export interface RuntimeObservation {
-  running: boolean;
+  running: boolean | undefined;
   ready: boolean;
+  services: ServiceRuntimeResponse[];
 }
 export abstract class RuntimeDriver {
   abstract start(target: RuntimeTarget, signal: AbortSignal): Promise<void>;
@@ -36,7 +41,12 @@ export abstract class RuntimeDriver {
 interface Container {
   Id: string;
   Config: { Image: string; Labels: Record<string, string> };
-  State: { Running: boolean; Restarting: boolean; Health?: { Status: string } };
+  State: {
+    Status: string;
+    Running: boolean;
+    Restarting: boolean;
+    Health?: { Status: string };
+  };
   NetworkSettings: {
     Networks: Record<string, unknown>;
     Ports: Record<string, { HostIp: string; HostPort: string }[] | null>;
@@ -129,23 +139,26 @@ export class DockerRuntimeDriver extends RuntimeDriver {
   private async containers(
     target: RuntimeTarget,
     signal: AbortSignal,
+    selectedIds?: string[],
   ): Promise<Container[]> {
     const project = this.project(target);
-    const ids = (
-      await this.command(
-        [
-          "ps",
-          "--all",
-          "--quiet",
-          "--no-trunc",
-          "--filter",
-          `label=com.docker.compose.project=${project}`,
-        ],
-        signal,
+    const ids =
+      selectedIds ??
+      (
+        await this.command(
+          [
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            `label=com.docker.compose.project=${project}`,
+          ],
+          signal,
+        )
       )
-    )
-      .split(/\s+/)
-      .filter(Boolean);
+        .split(/\s+/)
+        .filter(Boolean);
     if (
       ids.length > target.services.length ||
       ids.some((id) => !/^[a-f0-9]{64}$/.test(id))
@@ -290,15 +303,102 @@ export class DockerRuntimeDriver extends RuntimeDriver {
     target: RuntimeTarget,
     signal: AbortSignal,
   ): Promise<RuntimeObservation> {
-    const rows = await this.containers(target, signal);
+    const project = this.project(target);
+    // Include the service label so an isolated inspect failure can be attributed
+    // without trusting or publishing any failed container's inspect data.
+    const listed = await this.command(
+      [
+        "ps",
+        "--all",
+        "--no-trunc",
+        "--format",
+        '{{.ID}}\t{{.Label "com.docker.compose.service"}}',
+        "--filter",
+        `label=com.docker.compose.project=${project}`,
+      ],
+      signal,
+    );
+    const entries = listed
+      ? listed.split("\n").map((line) => line.split("\t"))
+      : [];
+    const names = new Set<string>();
+    const ids = new Set<string>();
+    for (const [id, name, extra] of entries) {
+      if (
+        !id ||
+        !/^[a-f0-9]{64}$/.test(id) ||
+        !name ||
+        extra !== undefined ||
+        names.has(name) ||
+        ids.has(id) ||
+        !target.services.some((service) => service.name === name)
+      )
+        throw new RuntimeFailure("RESOURCE_CONFLICT");
+      names.add(name);
+      ids.add(id);
+    }
     await this.network(target, signal);
+    const services: ServiceRuntimeResponse[] = [];
+    for (const service of target.services) {
+      const unknown = unknownService(service);
+      const entry = entries.find(([, name]) => name === service.name);
+      if (!entry) {
+        services.push({
+          ...unknown,
+          state: "not_created",
+          observedAt: new Date().toISOString(),
+        });
+        continue;
+      }
+      try {
+        const rows = await this.containers(target, signal, [entry[0]!]);
+        const row = rows[0]!;
+        if (
+          row.Config.Labels["com.docker.compose.service"] !== service.name ||
+          !containerStates.has(
+            row.State.Status as ServiceRuntimeResponse["state"],
+          ) ||
+          ["unknown", "not_created"].includes(row.State.Status) ||
+          ["running", "paused", "restarting"].includes(row.State.Status) !==
+            row.State.Running
+        )
+          throw new RuntimeFailure("RESOURCE_CONFLICT");
+        const health = row.State.Health?.Status;
+        services.push({
+          ...unknown,
+          state: row.State.Status as ServiceRuntimeResponse["state"],
+          health:
+            health === "starting" ||
+            health === "healthy" ||
+            health === "unhealthy"
+              ? health
+              : null,
+          publishedPort:
+            row.State.Running && service.hostPort !== undefined
+              ? {
+                  host: "127.0.0.1",
+                  hostPort: service.hostPort,
+                  containerPort: CATALOG[service.image].port,
+                }
+              : null,
+          observedAt: new Date().toISOString(),
+        });
+      } catch {
+        signal.throwIfAborted();
+        services.push(unknown);
+      }
+    }
+    const uncertain = services.some((service) => service.state === "unknown");
+    const running = services.some((service) =>
+      ["running", "restarting", "paused", "removing"].includes(service.state),
+    );
     return {
-      running: rows.some((row) => row.State.Running || row.State.Restarting),
-      ready:
-        rows.length === target.services.length &&
-        rows.every(
-          (row) => row.State.Running && row.State.Health?.Status === "healthy",
-        ),
+      running: running ? true : uncertain ? undefined : false,
+      ready: services.every(
+        (service) =>
+          service.state === "running" && service.health === "healthy",
+      ),
+      services,
     };
   }
   async start(target: RuntimeTarget, signal: AbortSignal): Promise<void> {
@@ -410,7 +510,7 @@ export class DockerRuntimeDriver extends RuntimeDriver {
           {},
           35000,
         );
-    if ((await this.observe(target, signal)).running)
+    if ((await this.observe(target, signal)).running !== false)
       throw new RuntimeFailure("STOP_FAILED");
   }
 }

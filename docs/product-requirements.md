@@ -29,6 +29,8 @@ Display how services connect by service name and container port. Default host ex
 
 Current milestone: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. List and detail pages also provide confirmed configuration deletion once generation finishes. The detail page adds one Start/Stop action left of Delete and a full runtime status label in place of the Generation line, retaining generation progress/errors separately. Starting/Stopping disable the action; failed/unknown deployments offer Stop until verified stopped. Delete is enabled for stopped configs; it waits for runner cleanup before removing the config, and shows retryable cleanup failures. Active/unknown runtime state blocks deletion. Provider selection, list runtime controls, logs, terminals, and edit/export remain planned. [Configuration API](configuration-api.md) defines implemented inputs; the builder fields below that exceed that contract are future scope.
 
+The detail page's read-only Containers section lists every configured service with image/tag, observed container state, available health, verified published host port, and observation time. It follows page-entry and Start/Stop status refreshes, then stops fetching when settled. Unknown observations and stale API results remain distinct from verified missing/exited containers; see the [container view](runtime-api.md#per-service-container-view).
+
 ## Main workflows
 
 1. Register or log in, then create a configuration.

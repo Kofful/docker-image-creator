@@ -105,3 +105,32 @@ export interface DeploymentResponse {
   operationId: string;
   observedAt: string | null;
 }
+
+export type ContainerState =
+  | "not_created"
+  | "created"
+  | "running"
+  | "restarting"
+  | "paused"
+  | "exited"
+  | "dead"
+  | "removing"
+  | "unknown";
+export interface ServiceRuntimeResponse {
+  name: string;
+  image: string;
+  state: ContainerState;
+  health: "starting" | "healthy" | "unhealthy" | null;
+  publishedPort: {
+    host: "127.0.0.1";
+    hostPort: number;
+    containerPort: number;
+  } | null;
+  observedAt: string | null;
+}
+export interface ConfigServicesResponse {
+  configId: string;
+  revisionId: string | null;
+  operationId: string | null;
+  services: ServiceRuntimeResponse[];
+}

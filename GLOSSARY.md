@@ -13,7 +13,7 @@ A retired configuration retained as history and unavailable for use.
 _Avoid_: Stopped configuration, which suggests its services can be started again
 
 **Service**:
-One component of a configuration, such as a Python application or a MySQL database.
+One component of a configuration, such as a Python application or a MySQL database. A service exists in the definition even before a deployment creates or starts its container.
 _Avoid_: App, when referring to a single component
 
 **Deployment**:
