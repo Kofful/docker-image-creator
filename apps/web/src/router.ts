@@ -44,15 +44,23 @@ export function createAppRouter(
         meta: { requiresAuth: true },
       },
       {
+        path: "/configs/:id/console/:service",
+        component: () => import("./views/TerminalPage.vue"),
+        meta: { requiresAuth: true, terminal: true },
+      },
+      {
         path: "/configs/:id",
         component: ConfigPage,
-        meta: { requiresAuth: true },
+        meta: { requiresAuth: true, terminalLanding: true },
       },
     ],
   });
   router.beforeEach((to) => {
     const auth = useAuthStore(pinia);
-    if (to.meta.requiresAuth && !auth.hasSession) return "/login";
+    const endedTerminal =
+      to.meta.terminalLanding && to.query.terminal === "authorization_ended";
+    if (to.meta.requiresAuth && !auth.hasSession && !endedTerminal)
+      return "/login";
     if (to.meta.guest && auth.hasSession) return "/account";
   });
   router.afterEach((to) => {

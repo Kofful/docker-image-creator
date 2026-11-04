@@ -14,7 +14,7 @@ const props = defineProps<{
   loading: boolean;
   pending: boolean;
 }>();
-defineEmits<{ retry: [] }>();
+defineEmits<{ retry: []; connect: [service: string] }>();
 const rows = computed<ServiceRuntimeResponse[]>(
   () =>
     props.snapshot?.services ??
@@ -90,6 +90,7 @@ function portLabel(port: NonNullable<ServiceRuntimeResponse["publishedPort"]>) {
             <th scope="col">Health</th>
             <th scope="col">Published port</th>
             <th scope="col">Last observed</th>
+            <th scope="col">Terminal</th>
           </tr>
         </thead>
         <tbody>
@@ -116,6 +117,18 @@ function portLabel(port: NonNullable<ServiceRuntimeResponse["publishedPort"]>) {
                 new Date(row.observedAt).toLocaleString()
               }}</time
               ><span v-else>Not observed</span>
+            </td>
+            <td>
+              <button
+                type="button"
+                :disabled="
+                  row.state !== 'running' || loading || pending || !!error
+                "
+                :aria-label="`Connect to ${row.name}`"
+                @click="$emit('connect', row.name)"
+              >
+                Connect
+              </button>
             </td>
           </tr>
         </tbody>

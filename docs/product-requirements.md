@@ -10,14 +10,14 @@ Agreed execution behavior: one running configuration per user with no global cou
 
 ## MVP screens
 
-| Route                             | Behavior                                                                                                                   |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `/register`                       | Email and password account creation; no email verification                                                                 |
-| `/login`                          | Email and password login with generic failure messages                                                                     |
-| `/configs/new`                    | Service catalog, settings form, optional natural language instructions, Generate action, warnings, and masked YAML preview |
-| `/configs`                        | User-owned configurations, runtime status, last operation, and start/stop/detail actions                                   |
-| `/configs/:id`                    | Revision preview, service statuses, redacted logs, exposed endpoints, and connection actions                               |
-| `/configs/:id/console/:serviceId` | Interactive terminal with connection status, resize, disconnect, and navigation back                                       |
+| Route                           | Behavior                                                                                                                   |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `/register`                     | Email and password account creation; no email verification                                                                 |
+| `/login`                        | Email and password login with generic failure messages                                                                     |
+| `/configs/new`                  | Service catalog, settings form, optional natural language instructions, Generate action, warnings, and masked YAML preview |
+| `/configs`                      | User-owned configurations, runtime status, last operation, and start/stop/detail actions                                   |
+| `/configs/:id`                  | Revision preview, service statuses, redacted logs, exposed endpoints, and connection actions                               |
+| `/configs/:id/console/:service` | Implemented same-tab container terminal with connection status, resize, Disconnect, and return to configuration detail     |
 
 Protect application routes, preserve form state on recoverable failures, show loading and empty states, and provide keyboard-accessible forms. The server remains authoritative for authentication and ownership.
 
@@ -27,7 +27,7 @@ For each service collect a unique DNS-safe name, catalog image/tag, environment 
 
 Display how services connect by service name and container port. Default host exposure is disabled; selected host bindings use loopback for the local MVP. Named volume persistence is explicit. Provide template commands that keep application containers running; report that shell access is unavailable when an image lacks a supported shell.
 
-Current milestone: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. List and detail pages also provide confirmed configuration deletion once generation finishes. The detail page adds one Start/Stop action left of Delete and a full runtime status label in place of the Generation line, retaining generation progress/errors separately. Starting/Stopping disable the action; failed/unknown deployments offer Stop until verified stopped. Delete is enabled for stopped configs; it waits for runner cleanup before removing the config, and shows retryable cleanup failures. Active/unknown runtime state blocks deletion. Provider selection, list runtime controls, logs, terminals, and edit/export remain planned. [Configuration API](configuration-api.md) defines implemented inputs; the builder fields below that exceed that contract are future scope.
+Current implementation: `/configs/new`, `/configs`, and `/configs/:id` submit, list, preview and poll saved generation. List and detail provide confirmed deletion after generation. Configuration detail includes Start/Stop and a lifecycle label, separate generation/operation errors, verified service observations, and Connect on running service rows. Starting/Stopping disable actions; failed/unknown deployments offer Stop until verified stopped. Delete waits for runner cleanup; failures remain retryable. Active/unknown runtime state blocks deletion. Connect opens the same-tab terminal; shell exit/disconnect or connection/authentication failure returns to config detail. No terminal idle/lifetime/count quotas or automatic reconnection are introduced. Provider selection, list runtime controls, logs, and edit/export remain planned. [Configuration API](configuration-api.md) defines implemented inputs; builder fields below that exceed that contract are future scope.
 
 The detail page's read-only Containers section lists every configured service with image/tag, observed container state, available health, verified published host port, and observation time. It follows page-entry and Start/Stop status refreshes, then stops fetching when settled. Unknown observations and stale API results remain distinct from verified missing/exited containers; see the [container view](runtime-api.md#per-service-container-view).
 

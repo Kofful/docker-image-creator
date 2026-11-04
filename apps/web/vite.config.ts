@@ -13,7 +13,12 @@ export default defineConfig({
     unstubGlobals: true,
   },
   server: {
-    proxy: { "/api": process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3000" },
+    proxy: {
+      "/api": {
+        target: process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3000",
+        ws: true,
+      },
+    },
     watch: { usePolling: process.env.DEV_WATCH_POLLING === "true" },
   },
 });

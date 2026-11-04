@@ -170,7 +170,12 @@ describe("configuration runtime controls", () => {
       "Unknown",
     );
     expect(section.text()).not.toContain("8081");
-    expect(section.findAll("button")).toHaveLength(0);
+    expect(section.findAll("button")).toHaveLength(2);
+    expect(
+      section
+        .findAll("button")
+        .every((button) => button.attributes("disabled") !== undefined),
+    ).toBe(true);
     const request = fetchMock.mock.calls.find(([path]) =>
       String(path).endsWith("/services"),
     );

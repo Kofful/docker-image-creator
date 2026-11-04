@@ -134,3 +134,28 @@ export interface ConfigServicesResponse {
   operationId: string | null;
   services: ServiceRuntimeResponse[];
 }
+export interface TerminalTicketResponse {
+  ticket: string;
+  expiresAt: string;
+  socketPath: string;
+}
+
+export type TerminalClientMessage =
+  | { type: "input"; data: string }
+  | { type: "resize"; cols: number; rows: number }
+  | { type: "disconnect" };
+
+export type TerminalEndReason =
+  | "disconnected"
+  | "shell_exited"
+  | "connection_lost"
+  | "authorization_ended"
+  | "container_unavailable"
+  | "shell_unavailable"
+  | "output_overflow"
+  | "connection_failed";
+
+export type TerminalServerMessage =
+  | { type: "ready"; shell: string }
+  | { type: "output"; data: string }
+  | { type: "exit"; reason: TerminalEndReason };

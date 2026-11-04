@@ -1,6 +1,6 @@
 # Configuration execution API
 
-Status (2026-11-03): Start, Stop, operation polling, deployment status, per-service container observations, durable MySQL admission, a separate private runner, and configuration-detail runtime controls are implemented as slices of milestone 5. Stopped-resource deletion is implemented through DELETE and the runner. Terminals, automatic temporary validation, and explicit persistent-data deletion remain follow-ups. Real workload startup and network/volume behavior require the supported-host smoke gate below; controlled-driver API tests do not prove those Docker behaviors.
+Status (2026-11-03): Start, Stop, operation polling, deployment status, per-service observations, durable MySQL admission, a private runner, and configuration-detail controls are implemented as slices of milestone 5. Stopped-resource deletion uses DELETE and the runner. Milestone 6 adds [container terminals](terminal-api.md); automatic temporary validation and explicit persistent-data deletion remain follow-ups. Full workload startup and network/volume behavior require the supported-host smoke gate below; controlled-driver API tests and terminal-specific Docker checks do not prove all those behaviors.
 
 ## Start a saved revision
 
@@ -54,7 +54,7 @@ The detail page enables Delete for never-started and verified stopped configurat
 
 ## Per-service container view
 
-Implemented on 2026-11-03: a read-only **Containers** section appears above the saved Compose preview on the configuration detail page. It lists every configured service, including services whose containers have not been created or have exited. Each row shows service name, image/tag, container state, health when available, any verified published host port, and last observation time. Container IDs, resource metrics, logs, per-container controls, and interactive terminals are outside this slice; existing configuration-wide Start/Stop controls remain.
+Implemented on 2026-11-03: a **Containers** section appears above the saved Compose preview on configuration detail. It lists every configured service, including absent/exited containers, with service name, image/tag, state, available health, verified published host port, and observation time. The subsequent [console milestone](terminal-api.md) adds Connect on running rows, opening a same-tab shell page. Container IDs, metrics, logs, and per-container lifecycle controls remain outside this view; configuration-wide Start/Stop controls remain.
 
 Container observations follow the existing configuration-status refresh flow: page entry and explicit Start/Stop actions. Rows follow existing operation polling through successful or failed Start/Stop, including an operation already pending on page entry, then stop refreshing once status settles. There is no recurring refresh while idle. Existing status-recovery backoff/manual retry and navigation cancellation remain. A later external container exit becomes visible on the next page entry or lifecycle action. These decisions do not change the runner's background reconciliation schedule or grant Docker access to the API/browser; displayed runtime information is the latest runner observation, not a synchronous Docker query from the page.
 

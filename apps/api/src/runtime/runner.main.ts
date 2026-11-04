@@ -7,6 +7,9 @@ import { ArtifactStore } from "../configs/artifact.store";
 import { SecretBox } from "../configs/secret-box";
 import { DockerRuntimeDriver, RuntimeDriver } from "./runtime.driver";
 import { RuntimeSettings, RuntimeWorker } from "./runtime.worker";
+import { TerminalService } from "../terminal/terminal.service";
+import { TerminalRunner } from "../terminal/terminal.runner";
+import { DockerExec } from "../terminal/docker-exec";
 
 @Module({
   providers: [
@@ -16,7 +19,11 @@ import { RuntimeSettings, RuntimeWorker } from "./runtime.worker";
     ArtifactStore,
     RuntimeSettings,
     RuntimeWorker,
-    { provide: RuntimeDriver, useClass: DockerRuntimeDriver },
+    DockerRuntimeDriver,
+    { provide: RuntimeDriver, useExisting: DockerRuntimeDriver },
+    TerminalService,
+    TerminalRunner,
+    DockerExec,
   ],
 })
 class RunnerModule {}
@@ -27,6 +34,12 @@ async function bootstrap() {
     abortOnError: false,
   });
   app.enableShutdownHooks();
+  try {
+    await app.get(TerminalRunner).listen();
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
 }
 void bootstrap().catch(() => {
   process.stderr.write(

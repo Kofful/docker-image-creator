@@ -11,8 +11,11 @@ import { createConfigsClient } from "../configs/client";
 import DeleteConfigButton from "../configs/DeleteConfigButton.vue";
 import ConfigContainers from "../configs/ConfigContainers.vue";
 import { useConfigRuntime } from "../configs/useConfigRuntime";
+import { terminalNotice } from "../terminal/messages";
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
+const terminalMessage = computed(() => terminalNotice(route.query.terminal));
 const client = createConfigsClient(useAuthStore().requestApi);
 const {
   state: runtimeState,
@@ -85,6 +88,19 @@ const containerError = computed(
       ? "Could not update container status. Previous observations may be stale."
       : ""),
 );
+const containersPending = computed(
+  () =>
+    !!pendingAction.value ||
+    deleting.value ||
+    !!deletionStatus.value ||
+    ["starting", "stopping"].includes(state.value),
+);
+function openTerminal(service: string) {
+  if (!config.value || containersPending.value) return;
+  void router.push(
+    `/configs/${encodeURIComponent(config.value.id)}/console/${encodeURIComponent(service)}`,
+  );
+}
 function runAction() {
   if (actionDisabled.value) return;
   void submit(
@@ -98,6 +114,7 @@ async function removed() {
   await router.replace("/configs");
 }
 async function load() {
+  if (!auth.hasSession) return;
   abort?.abort();
   abort = new AbortController();
   const signal = abort.signal;
@@ -132,6 +149,12 @@ onUnmounted(() => abort?.abort());
 <template>
   <section class="auth-card config-card">
     <h1>{{ config?.name ?? "Configuration" }}</h1>
+    <p v-if="terminalMessage" role="status" class="notice">
+      {{ terminalMessage }}
+    </p>
+    <p v-if="!auth.hasSession">
+      <RouterLink to="/login">Log in to view this configuration</RouterLink>
+    </p>
     <p v-if="config?.description">{{ config.description }}</p>
     <p v-if="config" role="status">
       <span class="runtime-status" :data-state="state">{{
@@ -178,8 +201,9 @@ onUnmounted(() => abort?.abort());
       :snapshot="services"
       :error="containerError"
       :loading="!services && servicesLoading && !statusError"
-      :pending="!!pendingAction"
+      :pending="containersPending"
       @retry="refreshRuntime"
+      @connect="openTerminal"
     />
     <template v-if="config?.revision">
       <p class="notice">

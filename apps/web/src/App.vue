@@ -8,7 +8,15 @@ const router = useRouter();
 watch(
   () => auth.hasSession,
   (active) => {
-    if (!active && router.currentRoute.value.meta.requiresAuth) {
+    if (
+      !active &&
+      router.currentRoute.value.meta.requiresAuth &&
+      !router.currentRoute.value.meta.terminal &&
+      !(
+        router.currentRoute.value.meta.terminalLanding &&
+        router.currentRoute.value.query.terminal === "authorization_ended"
+      )
+    ) {
       void router.replace({ path: "/login", query: { session: "ended" } });
     }
   },

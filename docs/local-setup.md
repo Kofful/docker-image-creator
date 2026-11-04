@@ -24,7 +24,7 @@ Verify disposable catalog workload startup and data/network behavior on a suppor
 
 The stack contains Vue in `apps/web`, Nest API in `apps/api`, the private runner in `apps/runner`, shared contracts, and four-service application infrastructure. MySQL migrations provide authentication, generation/revisions/secrets, deletion bookkeeping, and runtime operations/deployments/reservations. Vue provides authentication and configuration creation/list/detail/deletion; the health endpoint is liveness only. The private runner supplies explicit runtime execution through the [runtime API](runtime-api.md).
 
-Full production boot and supported-host runtime verification remain incomplete. Authentication, fake generation, saved configuration workflows, the runtime endpoint slice, and configuration-detail Start/Stop/status controls are implemented. Real LLM calls, runtime cleanup, automatic validation trials, and terminals remain planned. Historical checks below are distinguished from the current runtime verification record.
+Full production boot and supported-host runtime verification remain incomplete. Authentication, fake generation, saved configurations, Start/Stop/status, service observations, stopped-resource cleanup and [container terminals](terminal-api.md) are implemented. Real LLM calls, automatic validation trials, and explicit persistent-data deletion remain planned. Historical checks below are distinguished from the current verification record.
 
 ## Start the services
 
@@ -80,7 +80,7 @@ Frontend, contracts, and configuration mounts are read-only. API source is writa
 | Environment configuration                     | Repeat development `up -d --force-recreate` without `--build`          |
 | Prisma schema or committed migrations         | Restart the API; startup deploys migrations and regenerates the client |
 | Watcher script                                | Restart the API                                                        |
-| Runtime runner source                         | Repeat development `up --build -d --wait runner`                        |
+| Runtime runner source                         | Repeat development `up --build -d --wait runner`                       |
 
 For example, after adding a committed migration:
 
@@ -122,6 +122,7 @@ Agents must not access the real `.env`. Agent checks use explicit secret-free co
 | `AUTH_TRUSTED_ORIGINS`     | Required for source startup; Compose default `http://127.0.0.1:8080`     | Comma-separated exact HTTP(S) origins, with no trailing slash; add `http://127.0.0.1:5173` for Vite      |
 | `DEV_WATCH_POLLING`        | `false`                                                                  | Use polling for API/Vite source watchers in Docker development if native events are unavailable          |
 | `API_PROXY_TARGET`         | `http://127.0.0.1:3000` locally; `http://api:3000` in Docker development | Server-side Vite proxy target; not exposed as a browser variable                                         |
+| `TERMINAL_RUNNER_URL`      | `ws://runner:3001/terminal` in Compose and by default                    | API-only private runner target; source development uses `ws://127.0.0.1:3001/terminal`                   |
 
 MySQL port 3306 and API port 3000 are accessible only within the infrastructure network. The API consumes application database credentials; it never needs the MySQL root password. Prisma CLI and API runtime read process environment only and do not load environment files. No LLM credentials are needed. The auth variables listed above are documented in the root `.env.example`.
 
@@ -152,6 +153,8 @@ corepack pnpm --filter @docker-image-creator/web dev
 ```
 
 Vite proxies `/api` to `127.0.0.1:3000` and explicitly disables environment-file loading. API startup now requires MySQL, the auth settings, and the generation encryption key, even if only liveness is used. Keep `http://127.0.0.1:5173` in trusted origins when using Vite.
+
+For source-only terminals, explicitly set `TERMINAL_RUNNER_URL=ws://127.0.0.1:3001/terminal` for API and run `node apps/api/dist/runtime/runner.main.js` in a separate process with the same exported database/encryption/artifact settings. The runner needs the local Docker socket and Engine 28+; API/web do not. The default production and development Compose stacks already start this runner and set the private URL. Rebuild runner after backend terminal changes and recreate API to apply the migration. Nginx and Vite proxy WebSocket upgrades. No service port publication is needed for generated-container terminals. See [terminal behavior, recovery and checks](terminal-api.md).
 
 ## Historical scaffold and authentication verification
 
@@ -214,7 +217,6 @@ UI verification: all 49 frontend tests passed, including deletion from both page
 All 74 backend checks passed against disposable MySQL 8.4.11 with all four migrations applied twice. New coverage includes ownership/session/origin checks, concurrent idempotency, one configuration per user without a global count cap, cross-user port reservation races, concurrent runner claims, queue/lease expiry, rollback and unknown-state slot retention, Stop/Start manifest stability, tampered revisions, and driver refusal of conflicting labels/mounts/privileges/networks/limits. Routine lifecycle tests use a controlled driver; the actual Docker 27.1.2 gate rejects execution before any user resource is created.
 
 Workspace type checking and ESLint passed. Explicit formatting checks for changed code/package files, the new runtime documentation/ADR and glossary passed, as did whitespace checks. Production and development runner Compose merges passed `config --quiet` with explicit non-secret configuration and `/dev/null` as the environment file. The runner image built with the frozen lockfile, and its isolated/no-socket CLI check reported Compose v2.40.3. The supported-host smoke script stopped at the Engine 28+ prerequisite on this Engine 27.1.2 host; real workload startup/readiness, loopback reachability, network denial, and physical database retention remain unverified. No host upgrade, protected environment-file access, live LLM call, runtime UI, or terminal implementation was performed.
-
 
 ## Deploying stopped-configuration deletion
 

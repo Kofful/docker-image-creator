@@ -138,6 +138,7 @@ try {
       "dist-test/test/configs.test.js",
       "dist-test/test/runtime.test.js",
       "dist-test/test/runtime-driver.test.js",
+      "dist-test/test/terminal.test.js",
     ],
     env,
     180000,

@@ -66,6 +66,25 @@ interface Container {
 // This provider is registered only by the runner bootstrap, never by the API.
 @Injectable()
 export class DockerRuntimeDriver extends RuntimeDriver {
+  async terminalContainer(
+    target: RuntimeTarget,
+    service: string,
+  ): Promise<string> {
+    const signal = AbortSignal.timeout(15000);
+    const rows = await this.containers(target, signal);
+    const row = rows.find(
+      (item) => item.Config.Labels["com.docker.compose.service"] === service,
+    );
+    if (
+      !row ||
+      row.State.Status !== "running" ||
+      !row.State.Running ||
+      row.State.Restarting
+    )
+      throw new RuntimeFailure("CONTAINER_UNAVAILABLE");
+    await this.network(target, signal);
+    return row.Id;
+  }
   protected async command(
     args: string[],
     signal: AbortSignal,

@@ -33,6 +33,7 @@ services:
       CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?Set CONFIG_ENCRYPTION_KEY to 32 random bytes encoded as 64 hexadecimal characters (openssl rand -hex 32)}
       CONFIG_ARTIFACT_ROOT: /app/.runtime/configs
       CONFIG_FAKE_DELAY_MS: ${CONFIG_FAKE_DELAY_MS:-0}
+      TERMINAL_RUNNER_URL: ws://runner:3001/terminal
     volumes:
       - generated-configs:/app/.runtime/configs
     depends_on:
