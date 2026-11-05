@@ -24,6 +24,10 @@ export interface CreateComposeConfigRequest extends CreateConfigRequest {
   environmentBindings: ServiceEnvironmentBindingInput[];
 }
 
+export interface ConfigInputOptions {
+  suppliedEnvironment: boolean;
+}
+
 /** Server-issued reference, independent of container environment variable names. */
 export interface ComposeEnvironmentReference {
   reference: string;

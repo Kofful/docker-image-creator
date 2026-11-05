@@ -21,6 +21,7 @@ import type {
   AuthResponse,
   ConfigResponse,
   CreateConfigRequest,
+  CreateComposeConfigRequest,
   CreateConfigResponse,
   GenerationResponse,
 } from "@docker-image-creator/contracts";
@@ -410,7 +411,27 @@ test("two workers claim each job once and obey the two-slot global cap", async (
     await prisma.generationAttempt.count({ where: { status: "queued" } }),
     1,
   );
-  await setTimeout(550);
+  await Promise.all([
+    finished(a.generationId),
+    finished(b.generationId, other.access_token),
+  ]);
+  // Publication and slot release finish after the provider returns. Wait for
+  // that durable boundary instead of assuming the host commits within 550 ms.
+  for (let index = 0; index < 100; index++) {
+    if (
+      !(await prisma.generationSlot.count({
+        where: { generationId: { in: [a.generationId, b.generationId] } },
+      }))
+    )
+      break;
+    await setTimeout(10);
+  }
+  assert.equal(
+    await prisma.generationSlot.count({
+      where: { generationId: { in: [a.generationId, b.generationId] } },
+    }),
+    0,
+  );
   await Promise.all([worker.tick(), second.tick()]);
   for (const created of [a, b, c]) {
     for (let i = 0; i < 100; i++) {
@@ -894,4 +915,233 @@ test("persistent cleanup failures do not starve configurations beyond the first 
     await prisma.configuration.count({ where: { cleanupPending: true } }),
     20,
   );
+});
+
+function suppliedInput(): CreateComposeConfigRequest {
+  return {
+    ...input,
+    inputVersion: 2,
+    environmentValues: [
+      {
+        key: "root",
+        value: " root '$\\ #\nnext\rline 🙂 ",
+        purpose: "Database administrator password",
+      },
+      {
+        key: "app",
+        value: ' app $pass \\"# ',
+        purpose: "Shared application password",
+      },
+    ],
+    environmentBindings: [
+      { service: "db", name: "MYSQL_ROOT_PASSWORD", valueKey: "root" },
+      { service: "db", name: "MYSQL_PASSWORD", valueKey: "app" },
+      { service: "api", name: "PATH", valueKey: "app" },
+      { service: "api", name: "DOCKER_HOST", valueKey: "app" },
+    ],
+  };
+}
+
+test("supplied inputs stay gated until generation and execution integration is ready", async () => {
+  const options = await request(app.getHttpServer())
+    .get("/api/v1/config-input-options")
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(200);
+  assert.deepEqual(options.body, { suppliedEnvironment: false });
+  await request(app.getHttpServer())
+    .get("/api/v1/config-input-options")
+    .expect(401);
+  await create(suppliedInput()).expect(503);
+  assert.equal(await prisma.configuration.count(), 0);
+});
+
+test("supplied values are encrypted once with shared scoped bindings and value-free generation input", async () => {
+  Object.assign(settings, { suppliedEnvironmentEnabled: true });
+  const body = suppliedInput();
+  const key = randomUUID();
+  const created = (await create(body, auth.access_token, key).expect(202))
+    .body as CreateConfigResponse;
+  assert.deepEqual(
+    (await create(body, auth.access_token, key).expect(202)).body,
+    created,
+  );
+  await create(
+    {
+      ...body,
+      environmentValues: body.environmentValues.map((value) => ({
+        ...value,
+        value: "changed",
+      })),
+    },
+    auth.access_token,
+    key,
+  ).expect(409);
+  const values = await prisma.suppliedEnvironmentValue.findMany({
+    where: { configId: created.configId },
+    include: { bindings: true },
+  });
+  assert.equal(values.length, 2);
+  const box = app.get(SecretBox);
+  for (const entry of body.environmentValues) {
+    const stored = values.find((value) => value.purpose === entry.purpose)!;
+    assert.match(stored.reference, /^DIC_SECRET_[a-f0-9]{32}$/);
+    assert.equal(
+      box.open(
+        stored.valueEncrypted,
+        `${created.configId}:${stored.reference}`,
+      ),
+      entry.value,
+    );
+    assert.throws(() =>
+      box.open(stored.valueEncrypted, `${randomUUID()}:${stored.reference}`),
+    );
+    assert.equal(JSON.stringify(stored).includes(entry.value), false);
+  }
+  assert.equal(
+    values.find(
+      (value) => value.purpose === body.environmentValues[1]!.purpose,
+    )!.bindings.length,
+    3,
+  );
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  const providerInput = box.open(job.inputEncrypted, job.id);
+  const parsed = JSON.parse(providerInput) as {
+    inputVersion: number;
+    environment: unknown[];
+  };
+  assert.equal(parsed.inputVersion, 2);
+  assert.equal(parsed.environment.length, 2);
+  assert.equal(providerInput.includes('"valueKey"'), false);
+  assert.equal(providerInput.includes('"environmentValues"'), false);
+  for (const entry of body.environmentValues)
+    assert.equal(providerInput.includes(JSON.stringify(entry.value)), false);
+  const config = await prisma.configuration.findUniqueOrThrow({
+    where: { id: created.configId },
+  });
+  assert.equal(config.inputVersion, 2);
+  assert.match(config.inputDigest, /^[a-f0-9]{64}$/);
+  assert.notEqual(
+    config.inputDigest,
+    createHash("sha256").update(JSON.stringify(body)).digest("hex"),
+  );
+  assert.deepEqual(config.services, body.services);
+  let calls = 0;
+  generate = async () => {
+    calls++;
+    return "unexpected";
+  };
+  await worker.tick();
+  assert.equal(
+    calls,
+    0,
+    "Legacy worker must not process supplied-value inputs",
+  );
+  assert.equal((await status(created.generationId)).status, "queued");
+  const other = await register();
+  for (const path of [
+    `/configs/${created.configId}`,
+    `/generations/${created.generationId}`,
+  ]) {
+    await request(app.getHttpServer())
+      .get(`/api/v1${path}`)
+      .auth(other.access_token, { type: "bearer" })
+      .expect(404);
+    const response = await request(app.getHttpServer())
+      .get(`/api/v1${path}`)
+      .auth(auth.access_token, { type: "bearer" })
+      .expect(200);
+    for (const entry of body.environmentValues)
+      assert.equal(response.text.includes(JSON.stringify(entry.value)), false);
+    assert.equal(response.text.includes("valueEncrypted"), false);
+  }
+  const list = await request(app.getHttpServer())
+    .get("/api/v1/configs")
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(200);
+  assert.equal(list.text.includes("environmentValues"), false);
+  // The composite FK prevents accidental cross-configuration secret binding.
+  await assert.rejects(
+    prisma.serviceEnvironmentBinding.create({
+      data: {
+        id: randomUUID(),
+        configId: randomUUID(),
+        valueId: values[0]!.id,
+        service: "api",
+        name: "OTHER",
+      },
+    }),
+  );
+});
+
+test("environment validation rejects incomplete, ambiguous, unsupported, and unversioned inputs before enqueue", async () => {
+  Object.assign(settings, { suppliedEnvironmentEnabled: true });
+  const good = suppliedInput();
+  const invalid: object[] = [
+    { ...good, environmentValues: undefined },
+    { ...good, environmentBindings: undefined },
+    { ...good, inputVersion: undefined },
+    { ...good, environmentBindings: good.environmentBindings.slice(1) },
+    {
+      ...good,
+      environmentValues: [...good.environmentValues, good.environmentValues[0]],
+    },
+    {
+      ...good,
+      environmentBindings: [
+        ...good.environmentBindings,
+        good.environmentBindings[0],
+      ],
+    },
+    {
+      ...good,
+      environmentBindings: [
+        ...good.environmentBindings,
+        { service: "foreign", name: "TOKEN", valueKey: "root" },
+      ],
+    },
+    {
+      ...good,
+      environmentBindings: [
+        ...good.environmentBindings,
+        { service: "api", name: "TOKEN", valueKey: "missing" },
+      ],
+    },
+    ...["", "contains\0nul", "\ud800", "🙂".repeat(1025)].map((value) => ({
+      ...good,
+      environmentValues: [
+        { ...good.environmentValues[0], value },
+        good.environmentValues[1],
+      ],
+    })),
+    {
+      ...good,
+      environmentValues: [
+        { ...good.environmentValues[0], purpose: " " },
+        good.environmentValues[1],
+      ],
+    },
+    {
+      ...good,
+      environmentValues: [
+        ...good.environmentValues,
+        { key: "unused", value: "unused", purpose: "Not bound" },
+      ],
+    },
+    {
+      ...good,
+      environmentBindings: [
+        ...good.environmentBindings,
+        { service: "api", name: "BAD-NAME", valueKey: "root" },
+      ],
+    },
+  ];
+  for (const body of invalid) {
+    const response = await create(body).expect(400);
+    for (const entry of good.environmentValues)
+      assert.equal(response.text.includes(JSON.stringify(entry.value)), false);
+  }
+  assert.equal(await prisma.configuration.count(), 0);
+  assert.equal(await prisma.suppliedEnvironmentValue.count(), 0);
 });

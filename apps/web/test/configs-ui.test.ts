@@ -43,20 +43,24 @@ const config: ConfigResponse = {
 describe("configuration views", () => {
   const fetchMock = vi.fn<typeof fetch>();
   let wrapper: VueWrapper | undefined;
+  let suppliedEnvironment = false;
   beforeEach(() => {
+    suppliedEnvironment = false;
     vi.stubGlobal("fetch", (path: RequestInfo | URL, init?: RequestInit) =>
-      typeof path === "string" && path.endsWith("/services")
-        ? Promise.resolve(
-            json({
-              configId: config.id,
-              revisionId: null,
-              operationId: null,
-              services: [],
-            }),
-          )
-        : typeof path === "string" && path.endsWith("/deployment")
-          ? Promise.resolve(json({}, 404))
-          : fetchMock(path, init),
+      path === "/api/v1/config-input-options"
+        ? Promise.resolve(json({ suppliedEnvironment }))
+        : typeof path === "string" && path.endsWith("/services")
+          ? Promise.resolve(
+              json({
+                configId: config.id,
+                revisionId: null,
+                operationId: null,
+                services: [],
+              }),
+            )
+          : typeof path === "string" && path.endsWith("/deployment")
+            ? Promise.resolve(json({}, 404))
+            : fetchMock(path, init),
     );
     fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(json(tokens()));
@@ -142,6 +146,99 @@ describe("configuration views", () => {
       ),
     ).toBe(false);
     expect(wrapper!.text()).toContain("Compose saved");
+  });
+
+  it("masks supplied values, validates completeness, and submits shared bindings without browser persistence", async () => {
+    suppliedEnvironment = true;
+    const storage = vi.spyOn(Storage.prototype, "setItem");
+    await open("/configs/new");
+    await wrapper!.get("#config-name").setValue("Shared values");
+    await wrapper!.get("[data-add-value]").trigger("click");
+    await wrapper!.get("#value-key-0").setValue("shared");
+    await wrapper!.get("#value-purpose-0").setValue("Application setting");
+    const secret = " $money 'quoted' \\\\ # trailing ";
+    await wrapper!.get("#value-content-0").setValue(secret);
+    expect(wrapper!.get("#value-content-0").attributes("type")).toBe(
+      "password",
+    );
+    expect(wrapper!.text()).not.toContain(secret);
+    await wrapper!.get("form").trigger("submit");
+    expect(wrapper!.get('[role="alert"]').text()).toContain(
+      "Assign every supplied value",
+    );
+    for (const name of ["PATH", "DOCKER_HOST"]) {
+      await wrapper!.get('[data-add-binding="0"]').trigger("click");
+      const index = name === "PATH" ? 0 : 1;
+      await wrapper!.get(`#binding-name-${index}`).setValue(name);
+      await wrapper!.get(`#binding-value-${index}`).setValue("shared");
+    }
+    fetchMock.mockRejectedValueOnce(new TypeError("lost response"));
+    await wrapper!.get("form").trigger("submit");
+    await flushPromises();
+    const post = fetchMock.mock.calls.find(
+      ([path, init]) => path === "/api/v1/configs" && init?.method === "POST",
+    )!;
+    expect(JSON.parse(post[1]!.body as string)).toMatchObject({
+      inputVersion: 2,
+      environmentValues: [
+        { key: "shared", value: secret, purpose: "Application setting" },
+      ],
+      environmentBindings: [
+        { service: "app", name: "PATH", valueKey: "shared" },
+        { service: "app", name: "DOCKER_HOST", valueKey: "shared" },
+      ],
+    });
+    expect(storage).not.toHaveBeenCalled();
+    expect(wrapper!.text()).not.toContain(secret);
+  });
+
+  it("requires database passwords and reports validation failures without exposing values", async () => {
+    suppliedEnvironment = true;
+    await open("/configs/new");
+    await wrapper!.get("#config-name").setValue("Database");
+    await wrapper!.get("#service-image-0").setValue("mysql");
+    expect(wrapper!.text()).toContain("MYSQL_ROOT_PASSWORD, MYSQL_PASSWORD");
+    await wrapper!.get("form").trigger("submit");
+    expect(wrapper!.get('[role="alert"]').text()).toContain(
+      "required database passwords",
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([path, init]) => path === "/api/v1/configs" && init?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+
+  it("preserves multiline values and updates bindings when service names and value keys change", async () => {
+    suppliedEnvironment = true;
+    await open("/configs/new");
+    await wrapper!.get("[data-add-value]").trigger("click");
+    const reveal = wrapper!.get('button[aria-pressed="false"]');
+    await reveal.trigger("click");
+    expect(wrapper!.get("#value-content-0").element.tagName).toBe("TEXTAREA");
+    const secret = "first $line\nsecond \\line #";
+    await wrapper!.get("#value-content-0").setValue(secret);
+    await wrapper!.get('button[aria-pressed="true"]').trigger("click");
+    expect(wrapper!.get("#value-content-0").attributes("type")).toBe(
+      "password",
+    );
+    expect(
+      wrapper!.get("#value-content-0").attributes("readonly"),
+    ).toBeDefined();
+    expect(wrapper!.text()).not.toContain(secret);
+    await wrapper!.get('[data-add-binding="0"]').trigger("click");
+    await wrapper!.get("#binding-name-0").setValue("TOKEN");
+    await wrapper!.get("#binding-value-0").setValue("value-1");
+    await wrapper!.get("#value-key-0").setValue("renamed");
+    await wrapper!.get("#service-name-0").setValue("backend");
+    expect(wrapper!.text()).toContain("backend environment");
+    expect(
+      (wrapper!.get("#binding-value-0").element as HTMLSelectElement).value,
+    ).toBe("renamed");
+    await wrapper!.get('button[aria-pressed="false"]').trigger("click");
+    expect(
+      (wrapper!.get("#value-content-0").element as HTMLTextAreaElement).value,
+    ).toBe(secret);
   });
 
   it("confirms the selected list item, disables duplicate deletion, and preserves other items", async () => {

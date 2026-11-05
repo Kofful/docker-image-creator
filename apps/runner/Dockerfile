@@ -13,6 +13,8 @@ WORKDIR /app/apps/api
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/apps/api/node_modules ./node_modules
 COPY --from=build /app/apps/api/dist ./dist
+COPY --from=build /app/packages/contracts/dist /app/packages/contracts/dist
+COPY --from=build /app/packages/contracts/package.json /app/packages/contracts/package.json
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 # Docker control is privileged. Only this private service receives the host socket.

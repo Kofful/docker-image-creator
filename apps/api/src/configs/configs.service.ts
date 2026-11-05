@@ -4,11 +4,13 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ConfigResponse,
   CreateConfigRequest,
+  CreateComposeConfigRequest,
   CreateConfigResponse,
   GenerationResponse,
   RuntimeAcceptedResponse,
@@ -24,6 +26,9 @@ import { operationResponse } from "../runtime/runtime.service";
 import { SecretBox } from "./secret-box";
 import { validateServices } from "./compose.compiler";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
+import { GenerationSettings } from "./generation.settings";
+import { prepareComposeInput } from "./compose.environment";
+import { environmentInputError } from "@docker-image-creator/contracts";
 
 export function generationResponse(
   row: GenerationAttempt & { revision?: ConfigRevision | null },
@@ -63,18 +68,40 @@ export class ConfigsService {
     private readonly prisma: PrismaService,
     private readonly box: SecretBox,
     private readonly cleanup: ConfigArtifactCleanup,
+    private readonly settings: GenerationSettings,
   ) {}
   async create(
     userId: string,
-    input: CreateConfigRequest,
+    input: CreateConfigRequest | CreateComposeConfigRequest,
     requestKey: string = randomUUID(),
   ): Promise<CreateConfigResponse> {
     validateServices(input.services);
+    const versioned =
+      "inputVersion" in input && input.inputVersion === 2 ? input : null;
+    if (
+      !versioned &&
+      (("environmentValues" in input &&
+        input.environmentValues !== undefined) ||
+        ("environmentBindings" in input &&
+          input.environmentBindings !== undefined))
+    )
+      throw new BadRequestException(
+        "Environment values require inputVersion 2",
+      );
+    if (versioned) {
+      const error = environmentInputError(versioned);
+      if (error) throw new BadRequestException(error);
+      if (!this.settings.suppliedEnvironmentEnabled)
+        throw new ServiceUnavailableException(
+          "Supplied environment generation is not available yet",
+        );
+    }
     const configId = randomUUID();
     const generationId = randomUUID();
-    const inputDigest = createHash("sha256")
-      .update(JSON.stringify(input))
-      .digest("hex");
+    // Keyed digest prevents offline guesses of supplied passwords from DB hashes.
+    const inputDigest = versioned
+      ? this.box.fingerprint(JSON.stringify(input))
+      : createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const result = await this.prisma.$transaction(async (tx) => {
       // Serialize admissions for this user across API instances.
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
@@ -111,6 +138,15 @@ export class ConfigsService {
         })) >= 20
       )
         throw new ConflictException("Configuration quota reached");
+      const prepared = versioned
+        ? prepareComposeInput(
+            userId,
+            configId,
+            generationId,
+            versioned,
+            this.box,
+          )
+        : null;
       await tx.configuration.create({
         data: {
           id: configId,
@@ -120,17 +156,23 @@ export class ConfigsService {
           name: input.name.trim(),
           description: input.description ?? "",
           services: input.services.map((service) => ({ ...service })),
+          inputVersion: versioned ? 2 : 1,
           generations: {
             create: {
               id: generationId,
               inputEncrypted: this.box.seal(
-                JSON.stringify(input),
+                JSON.stringify(prepared?.requirements ?? input),
                 generationId,
               ),
             },
           },
         },
       });
+      for (const value of prepared?.values ?? []) {
+        const { bindings, ...record } = value;
+        await tx.suppliedEnvironmentValue.create({ data: record });
+        await tx.serviceEnvironmentBinding.createMany({ data: bindings });
+      }
       return { configId, generationId, status: "queued" as const };
     });
     return {

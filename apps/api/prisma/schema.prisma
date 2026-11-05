@@ -62,6 +62,8 @@ model Configuration {
   name               String              @db.VarChar(80)
   description        String              @db.VarChar(500)
   services           Json
+  inputVersion       Int                 @default(1) @map("input_version")
+  environmentValues  SuppliedEnvironmentValue[]
   requestKey         String              @map("request_key") @db.Char(36)
   inputDigest        String              @map("input_digest") @db.Char(64)
   createdAt          DateTime            @default(now()) @map("created_at") @db.DateTime(3)
@@ -82,6 +84,33 @@ model Configuration {
   @@index([userId, deletedAt, createdAt])
   @@index([cleanupPending, deletedAt])
   @@map("configurations")
+}
+
+model SuppliedEnvironmentValue {
+  id             String        @id @db.Char(36)
+  configId       String        @map("config_id") @db.Char(36)
+  reference      String        @unique @db.VarChar(43)
+  purpose        String        @db.VarChar(500)
+  valueEncrypted String        @map("value_encrypted") @db.Text
+  config         Configuration @relation(fields: [configId], references: [id], onDelete: Cascade)
+  bindings       ServiceEnvironmentBinding[]
+
+  @@unique([id, configId])
+  @@index([configId])
+  @@map("supplied_environment_values")
+}
+
+model ServiceEnvironmentBinding {
+  id        String                   @id @db.Char(36)
+  configId  String                   @map("config_id") @db.Char(36)
+  valueId   String                   @map("value_id") @db.Char(36)
+  service   String                   @db.VarChar(30)
+  name      String                   @db.VarChar(128)
+  value     SuppliedEnvironmentValue @relation(fields: [valueId, configId], references: [id, configId], onDelete: Cascade)
+
+  @@unique([configId, service, name])
+  @@index([valueId, configId])
+  @@map("service_environment_bindings")
 }
 
 model GenerationAttempt {

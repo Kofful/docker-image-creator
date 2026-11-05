@@ -150,7 +150,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
         if (!slots[0]) return null;
         const rows = await tx.$queryRaw<
           { id: string }[]
-        >`SELECT g.id FROM generation_attempts g JOIN configurations c ON c.id = g.config_id WHERE g.status = 'queued' AND c.deleted_at IS NULL ORDER BY g.created_at, g.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
+        >`SELECT g.id FROM generation_attempts g JOIN configurations c ON c.id = g.config_id WHERE g.status = 'queued' AND c.input_version = 1 AND c.deleted_at IS NULL ORDER BY g.created_at, g.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
         if (!rows[0]) return null;
         const id = rows[0].id;
         const token = randomUUID();

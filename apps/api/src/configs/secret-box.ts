@@ -1,10 +1,21 @@
 import { Injectable } from "@nestjs/common";
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+} from "node:crypto";
 import { GenerationSettings } from "./generation.settings";
 
 @Injectable()
 export class SecretBox {
   constructor(private readonly settings: GenerationSettings) {}
+  fingerprint(text: string): string {
+    return createHmac("sha256", this.settings.encryptionKey)
+      .update("compose-input-v2\0")
+      .update(text)
+      .digest("hex");
+  }
   seal(text: string, context: string): string {
     const nonce = randomBytes(12);
     const cipher = createCipheriv(

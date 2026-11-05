@@ -1,3 +1,8 @@
+export {
+  ENVIRONMENT_LIMITS,
+  environmentInputError,
+  requiredEnvironmentNames,
+} from "./environment";
 export type {
   ComposeEnvironmentReference,
   ComposeGenerationRequirements,
@@ -7,6 +12,7 @@ export type {
   ComposeRevisionHeader,
   ComposeRevisionMetadata,
   ComposeServiceMetadata,
+  ConfigInputOptions,
   CreateComposeConfigRequest,
   ServiceEnvironmentBindingInput,
   SuppliedEnvironmentValueInput,

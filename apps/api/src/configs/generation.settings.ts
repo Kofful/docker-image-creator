@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 
 @Injectable()
 export class GenerationSettings {
+  // Activate only after direct generation and runner validation are integrated.
+  readonly suppliedEnvironmentEnabled = false;
   readonly root = resolve(
     process.env.CONFIG_ARTIFACT_ROOT ??
       resolve(__dirname, "../../../../.runtime/configs"),

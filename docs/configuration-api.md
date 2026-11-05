@@ -6,6 +6,10 @@ All routes use `/api/v1`, bearer access tokens, origin checks, and `Cache-Contro
 
 The later [runtime API](runtime-api.md) adds explicit Start/Stop and operation/deployment polling without changing generation behavior. For a stopped deployment, DELETE now returns 202 and delegates scoped container/network/artifact cleanup to the runner; see [runtime deletion](runtime-api.md#delete-a-stopped-configuration). Named volumes and recovery metadata are preserved. The immediate artifact-only contract below applies to never-started configurations.
 
+## Supplied environment input foundation
+
+Step 2 adds a gated version 2 creation contract with supplied values and shared service bindings. Authenticated `GET /api/v1/config-input-options` currently returns `{ "suppliedEnvironment": false }`; valid version 2 creation returns 503 without persistence until direct generation and execution are integrated. Integration tests override this internal gate to exercise the transaction. The current form continues using version 1 while the capability is false. See [request fields, encryption, limits, and verification](supplied-environment.md). The version 1 contract below remains active. Never put credentials in instructions or purposes.
+
 ## Submit once, then poll
 
 `POST /api/v1/configs` accepts:

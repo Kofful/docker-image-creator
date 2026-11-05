@@ -21,11 +21,21 @@ import {
 import { AuthOriginGuard } from "../auth/auth-origin.guard";
 import { CreateConfigDto } from "./config.dto";
 import { ConfigsService } from "./configs.service";
+import { GenerationSettings } from "./generation.settings";
+import type { CreateComposeConfigRequest } from "@docker-image-creator/contracts";
 
 @Controller()
 @UseGuards(AuthOriginGuard, AccessTokenGuard)
 export class ConfigsController {
-  constructor(private readonly configs: ConfigsService) {}
+  constructor(
+    private readonly configs: ConfigsService,
+    private readonly settings: GenerationSettings,
+  ) {}
+  @Get("config-input-options")
+  @Header("Cache-Control", "no-store")
+  inputOptions() {
+    return { suppliedEnvironment: this.settings.suppliedEnvironmentEnabled };
+  }
   @Post("configs")
   @HttpCode(202)
   @Header("Cache-Control", "no-store")
@@ -44,7 +54,7 @@ export class ConfigsController {
       throw new BadRequestException("Idempotency-Key must be a UUID");
     const result = await this.configs.create(
       request.principal.user.id,
-      body,
+      body.inputVersion === 2 ? (body as CreateComposeConfigRequest) : body,
       key,
     );
     response.setHeader("Location", result.statusUrl);

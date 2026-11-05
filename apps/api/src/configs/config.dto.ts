@@ -18,6 +18,8 @@ import type {
   CatalogImage,
   ConfigServiceInput,
   CreateConfigRequest,
+  SuppliedEnvironmentValueInput,
+  ServiceEnvironmentBindingInput,
 } from "@docker-image-creator/contracts";
 
 export class ConfigServiceDto implements ConfigServiceInput {
@@ -39,6 +41,29 @@ export class ConfigServiceDto implements ConfigServiceInput {
 }
 
 export class CreateConfigDto implements CreateConfigRequest {
+  @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
+  @IsIn([2])
+  inputVersion?: 2;
+
+  @ValidateIf(
+    (object: CreateConfigDto) =>
+      object.inputVersion === 2 || object.environmentValues !== undefined,
+  )
+  @IsArray()
+  @ArrayMaxSize(64)
+  @ValidateNested({ each: true })
+  @Type(() => EnvironmentValueDto)
+  environmentValues?: EnvironmentValueDto[];
+
+  @ValidateIf(
+    (object: CreateConfigDto) =>
+      object.inputVersion === 2 || object.environmentBindings !== undefined,
+  )
+  @IsArray()
+  @ArrayMaxSize(128)
+  @ValidateNested({ each: true })
+  @Type(() => EnvironmentBindingDto)
+  environmentBindings?: EnvironmentBindingDto[];
   @IsString() @Length(1, 80) @Matches(/\S/) name!: string;
   @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
   @IsString()
@@ -54,4 +79,16 @@ export class CreateConfigDto implements CreateConfigRequest {
   @ValidateNested({ each: true })
   @Type(() => ConfigServiceDto)
   services!: ConfigServiceDto[];
+}
+
+export class EnvironmentValueDto implements SuppliedEnvironmentValueInput {
+  @IsString() @Matches(/^[a-z][a-z0-9_-]{0,63}$/) key!: string;
+  @IsString() @Length(1, 4096) value!: string;
+  @IsString() @Length(1, 500) purpose!: string;
+}
+
+export class EnvironmentBindingDto implements ServiceEnvironmentBindingInput {
+  @IsString() @Matches(/^[a-z][a-z0-9-]{0,29}$/) service!: string;
+  @IsString() @Matches(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/) name!: string;
+  @IsString() @Matches(/^[a-z][a-z0-9_-]{0,63}$/) valueKey!: string;
 }

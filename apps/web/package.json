@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "vue-tsc --noEmit && vite build",
+    "dev": "pnpm --filter @docker-image-creator/contracts build && vite --host 127.0.0.1",
+    "build": "pnpm --filter @docker-image-creator/contracts build && vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run"
+    "test": "pnpm --filter @docker-image-creator/contracts build && vitest run"
   },
   "dependencies": {
     "@docker-image-creator/contracts": "workspace:*",

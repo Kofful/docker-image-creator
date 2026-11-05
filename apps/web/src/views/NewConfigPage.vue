@@ -1,18 +1,47 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import type {
   CatalogImage,
   ConfigServiceInput,
+  CreateConfigRequest,
+  CreateComposeConfigRequest,
+  SuppliedEnvironmentValueInput,
+  ServiceEnvironmentBindingInput,
 } from "@docker-image-creator/contracts";
 import { useAuthStore } from "../auth/store";
 import { AuthError } from "../auth/session";
 import { createConfigsClient } from "../configs/client";
+import EnvironmentInputs from "../configs/EnvironmentInputs.vue";
+import { environmentInputError } from "@docker-image-creator/contracts";
 const client = createConfigsClient(useAuthStore().requestApi);
 const router = useRouter();
 const name = ref("");
 const description = ref("");
 const instructions = ref("");
+const environmentValues = ref<SuppliedEnvironmentValueInput[]>([]);
+const environmentBindings = ref<ServiceEnvironmentBindingInput[]>([]);
+const suppliedEnvironment = ref(false);
+const optionsLoaded = ref(false);
+let disposed = false;
+onMounted(async () => {
+  try {
+    const options = await client.inputOptions();
+    if (!disposed)
+      suppliedEnvironment.value = options.suppliedEnvironment === true;
+  } catch {
+    /* Keep the current creation flow when the capability is unavailable. */
+  } finally {
+    optionsLoaded.value = true;
+  }
+});
+onBeforeUnmount(() => {
+  disposed = true;
+  environmentValues.value = [];
+  environmentBindings.value = [];
+  pendingInput = "";
+  pendingKey = "";
+});
 const services = ref<{ name: string; image: CatalogImage }[]>([
   { name: "app", image: "node" },
 ]);
@@ -21,11 +50,11 @@ const error = ref("");
 let pendingInput = "";
 let pendingKey = "";
 async function submit() {
-  if (busy.value) return;
+  if (busy.value || !optionsLoaded.value) return;
   busy.value = true;
   error.value = "";
   try {
-    const input = {
+    let input: CreateConfigRequest | CreateComposeConfigRequest = {
       name: name.value,
       description: description.value,
       instructions: instructions.value,
@@ -38,6 +67,19 @@ async function submit() {
         }),
       ),
     };
+    if (suppliedEnvironment.value) {
+      input = {
+        ...input,
+        inputVersion: 2,
+        environmentValues: environmentValues.value,
+        environmentBindings: environmentBindings.value,
+      };
+      const message = environmentInputError(input);
+      if (message) {
+        error.value = message;
+        return;
+      }
+    }
     const serialized = JSON.stringify(input);
     if (serialized !== pendingInput) {
       pendingInput = serialized;
@@ -47,9 +89,13 @@ async function submit() {
     await router.push(`/configs/${result.configId}`);
   } catch (cause) {
     error.value =
-      cause instanceof AuthError && cause.status === 409
-        ? "You already have an active generation or reached your configuration quota. Check your configurations."
-        : "Could not confirm creation. Check your configurations before retrying; the request may have been saved.";
+      cause instanceof AuthError && cause.status === 400
+        ? "Check service names, required database passwords, environment names, purposes, and value assignments."
+        : cause instanceof AuthError && cause.status === 503
+          ? "Generation with supplied environment values is not available yet. Your values have not been saved."
+          : cause instanceof AuthError && cause.status === 409
+            ? "You already have an active generation or reached your configuration quota. Check your configurations."
+            : "Could not confirm creation. Check your configurations before retrying; the request may have been saved.";
   } finally {
     busy.value = false;
   }
@@ -59,7 +105,11 @@ async function submit() {
   <section class="auth-card config-card">
     <h1>Create configuration</h1>
     <p class="notice">
-      Development generator: uses catalog templates, without a live LLM.
+      {{
+        suppliedEnvironment
+          ? "Generate Compose using your selected services and supplied environment values."
+          : "Development generator: uses catalog templates, without a live LLM."
+      }}
       Containers are not started.
     </p>
     <form @submit.prevent="submit">
@@ -76,7 +126,7 @@ async function submit() {
           v-model="instructions"
           maxlength="16000"
         />
-        <p class="field-help">
+        <p v-if="!suppliedEnvironment" class="field-help">
           The development generator preserves selections and does not interpret
           instructions.
         </p>
@@ -123,7 +173,13 @@ async function submit() {
         >
           Add service
         </button>
-        <button type="submit">
+        <EnvironmentInputs
+          v-if="suppliedEnvironment"
+          v-model:values="environmentValues"
+          v-model:bindings="environmentBindings"
+          :services="services"
+        />
+        <button type="submit" :disabled="!optionsLoaded">
           {{ busy ? "Submitting…" : "Generate Compose" }}
         </button>
       </fieldset>

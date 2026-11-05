@@ -1,6 +1,8 @@
 import type {
   ConfigResponse,
   CreateConfigRequest,
+  CreateComposeConfigRequest,
+  ConfigInputOptions,
   CreateConfigResponse,
   GenerationResponse,
   RuntimeAcceptedResponse,
@@ -14,7 +16,7 @@ export type ApiRequest = (
 
 export function createConfigsClient(request: ApiRequest) {
   async function create(
-    input: CreateConfigRequest,
+    input: CreateConfigRequest | CreateComposeConfigRequest,
     idempotencyKey: string = crypto.randomUUID(),
   ): Promise<CreateConfigResponse> {
     // Do not automatically repeat POST after a lost response: discover jobs via list.
@@ -107,7 +109,10 @@ export function createConfigsClient(request: ApiRequest) {
       );
     }
   }
-  return { create, get, list, remove, poll };
+  async function inputOptions(): Promise<ConfigInputOptions> {
+    return (await request("/api/v1/config-input-options")).json();
+  }
+  return { create, get, list, remove, poll, inputOptions };
 }
 
 function pause(ms: number, signal: AbortSignal): Promise<void> {
