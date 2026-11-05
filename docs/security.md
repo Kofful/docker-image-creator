@@ -1,5 +1,7 @@
 # Security plan
 
+Accepted generation change, not yet implemented: [ADR 0004](adr/0004-direct-llm-compose-generation.md) replaces compiler-authored Compose with strict validation of model-authored Compose before saving and again before any runner execution. Keep supplied confidential values outside model requests, use server-controlled interpolation names distinct from container environment keys, and preserve ownership/isolation/resource checks. The [test-only evaluation](llm-compose-evaluation.md) uses the same policy with disposable resources and terminal/file results, without database persistence.
+
 ## Deployment boundary
 
 MVP: a dedicated local Docker host used by trusted accounts. Containers and interactive shells execute code on that host. Resource limits, bridge networking, and app authorization reduce accidental exposure but do not make shared-host Docker safe for hostile tenants. A public service needs a separate runner isolation design, such as dedicated VMs, before deployment.

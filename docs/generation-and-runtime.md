@@ -2,6 +2,12 @@
 
 [ADR 0002](adr/0002-compose-only-generation.md) records the accepted public-image, single-document approach. Custom Dockerfiles/builds from ADR 0001 are deferred. The current [configuration API](configuration-api.md) implements generation and saving with a deterministic fake. Live LLM calls and automatic Docker validation remain planned.
 
+## Accepted next generation design
+
+[ADR 0004](adr/0004-direct-llm-compose-generation.md) and the [implementation plan](llm-compose-plan.md) replace the procedural service-spec/compiler and runtime regeneration with directly model-authored Compose from OpenRouter's `google/gemma-4-26b-a4b-it:free`. Validate the complete document before persistence and again before execution, using its exact stored text/digest and derived lifecycle metadata. Users supply required environment values/shared bindings during creation; confidential values stay encrypted and outside model requests. Product generation permits one validation-driven model repair and no template or paid-model fallback. Old template-generated configurations are unsupported after rollout; there is no conversion path.
+
+The accepted [ten-case evaluation](llm-compose-evaluation.md) is testing only: a terminal command prints all results and writes files without database persistence. It measures first-response policy acceptance, healthy startup, and independent task success with disposable resources. It does not add automatic Docker trials to ordinary generation. None of this next design is implemented yet; the sections below describe current code and previously planned runtime work.
+
 ## Implemented generation milestone
 
 - A Configuration has one to four Services selected from Node.js, Python, MySQL, and MongoDB. Category, runtime/language, and database engine are distinct settings. Java and additional image families remain deferred.
@@ -75,4 +81,4 @@ Accepted runner defaults are two minutes for readiness, ten seconds for observat
 
 ## Deferred work
 
-Select the real provider/model and complete its separately authorized credential workflow; implement bounded streaming/cancellation and a real-provider smoke test. Automatic Docker validation, revision editing/history/export, explicit persistent-data deletion, and the full supported-host catalog/network/data-retention gate remain pending. The private runner, manual lifecycle, stopped-resource deletion and terminal authorization are implemented. The dedicated trusted local-host deployment boundary still applies; Docker access is privileged and is not a hostile multi-tenant sandbox.
+Implement the selected OpenRouter adapter, direct Compose validator/runtime changes, supplied values, and terminal evaluation through the accepted milestone 4 plan; operator-provided credential configuration remains necessary for actual inference. Automatic product Docker validation, revision editing/history/export, secret rotation, explicit persistent-data deletion, and the full supported-host catalog/network/data-retention gate remain pending. The private runner, manual lifecycle, stopped-resource deletion and terminal authorization are implemented. The dedicated trusted local-host deployment boundary still applies; Docker access is privileged and is not a hostile multi-tenant sandbox.

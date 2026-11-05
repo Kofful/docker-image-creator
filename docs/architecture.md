@@ -1,5 +1,13 @@
 # Architecture
 
+## Accepted direct LLM generation design (2026-11-05)
+
+[ADR 0004](adr/0004-direct-llm-compose-generation.md) accepts replacing procedural Compose generation and runtime recompilation with the document authored directly by OpenRouter's `google/gemma-4-26b-a4b-it:free`. Keep the four-image catalog/isolation, model-authored service behavior, creation-time supplied values/shared bindings, confidential values outside model requests, and one product-generation repair without fallback. Validate, persist, and execute the same document, using derived metadata for lifecycle checks. Legacy configurations are unsupported; no conversion or backward-compatible runtime path is planned, and retained data is not automatically deleted. General configuration editing and secret rotation remain deferred. The [implementation plan](llm-compose-plan.md) defines verifiable steps and the rollout cutoff. The accepted [ten-case evaluation](llm-compose-evaluation.md) is a testing-only terminal tool with printed results and file reports, without database persistence. The contract foundation below is implemented; generation/runtime integration and evaluation remain pending.
+
+### Version 2 contract foundation (2026-11-05)
+
+Step 1 adds separate creation/private-value, provider-metadata, safe generation status, and derived revision interfaces in `packages/contracts/src/compose.ts`. `compose.policy.ts` defines required settings/field allowlists and server-owned labels; the pinned catalog now lives independently of the compiler in `image.catalog.ts`. `compose.revision.ts` reads only version 2 candidate envelopes, checks server identity and exact document digest, and deliberately keeps derived metadata untrusted pending YAML validation. No module renders or patches Compose. The [policy contract](compose-policy.md) describes the subset, fixture, and verification boundary. These modules are not activated in the existing API/runner; legacy rejection takes effect when the integrated replacement is enabled in subsequent steps. Nine contract tests and API/contracts/web type checks passed without Docker, MySQL, model calls, or environment-file loading.
+
 ## Implemented scaffold
 
 `infra/docker-compose.yml` builds `docker-image-creator-web:local` from `apps/web/Dockerfile`, `docker-image-creator-api:local` from `apps/api/Dockerfile`, and `docker-image-creator-runner:local` from `apps/runner/Dockerfile`, and runs `mysql:8.4.11`. All four join the Compose project-scoped `infrastructure` bridge network. MySQL stores data in the project-scoped `mysql-data` named volume. API, MySQL, and runner publish no host ports. Web publishes port 8080 on loopback by default.
@@ -73,7 +81,7 @@ The [2026-11-01 decision](adr/0003-shared-host-execution.md) retains a private r
 - Backend: NestJS with strict TypeScript, validation, REST endpoints, and an authenticated terminal gateway.
 - Frontend: Vue 3, Vite, Vue Router, Pinia for session/application state, and xterm.js for terminal display.
 - Persistence: MySQL with Prisma migrations; MySQL-backed sessions and durable operation records avoid requiring Redis for the MVP.
-- Agent: provider-neutral adapter producing structured validated output through a bounded generation loop.
+- Generation target: provider-neutral adapter with the selected OpenRouter model authoring Compose directly, strict validation, and at most one content repair; see ADR 0004. The current fake/spec compiler remains the implemented path until this change is built.
 - Execution: separate NestJS runner process using Docker Compose v2 for lifecycle operations and Node HTTP over the local Engine socket for create/start/resize/inspect exec calls.
 - Workspace: pnpm; initial versions are pinned in manifests and Dockerfiles, with clean installation and full compatibility checks still pending.
 
@@ -110,7 +118,7 @@ Only one mutating operation per stack may execute at a time. Leases, operation a
 
 ## Decisions and open choices
 
-The separate runner, durable MySQL operations, immutable revisions, and structured generation contract are planned defaults. Resolve LLM provider/model, specific image tags, terminal/Engine client libraries, resource caps, and secret-key provisioning during their implementation milestone. Public hosting requires a separate execution isolation design.
+The separate runner, durable MySQL operations, and immutable revisions remain the architectural defaults. [ADR 0004](adr/0004-direct-llm-compose-generation.md) selects OpenRouter/Gemma and a direct Compose output contract; its implementation replaces the current compiler path. Approved image tags and resource caps remain constrained by the catalog/runtime policy, and secret-key provisioning remains an operator responsibility. Public hosting requires a separate execution isolation design.
 
 ### Execution design discussion (2026-11-01)
 

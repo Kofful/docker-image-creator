@@ -11,7 +11,8 @@
     "prisma:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",
     "test": "pnpm build && tsc -p tsconfig.test.json && node scripts/test-auth.mjs",
-    "test:runtime": "pnpm build && node scripts/test-runtime.mjs"
+    "test:runtime": "pnpm build && node scripts/test-runtime.mjs",
+    "test:compose-contract": "tsc -p tsconfig.compose-contract.json && node dist-test/test/compose-contract.test.js"
   },
   "dependencies": {
     "@docker-image-creator/contracts": "workspace:*",

@@ -1,3 +1,17 @@
+export type {
+  ComposeEnvironmentReference,
+  ComposeGenerationRequirements,
+  ComposeGenerationResponse,
+  ComposeIdentity,
+  ComposeRevisionArtifact,
+  ComposeRevisionHeader,
+  ComposeRevisionMetadata,
+  ComposeServiceMetadata,
+  CreateComposeConfigRequest,
+  ServiceEnvironmentBindingInput,
+  SuppliedEnvironmentValueInput,
+} from "./compose";
+
 export interface HealthResponse {
   status: "ok";
   service: "api";
