@@ -118,6 +118,9 @@ model GenerationAttempt {
   configId        String           @map("config_id") @db.Char(36)
   status          GenerationStatus @default(queued)
   stage           String           @default("queued") @db.VarChar(32)
+  provider        String           @default("fake") @db.VarChar(16)
+  model           String?          @db.VarChar(128)
+  providerResponses Json?          @map("provider_responses")
   inputEncrypted  String           @map("input_encrypted") @db.MediumText
   outputEncrypted String?          @map("output_encrypted") @db.MediumText
   outputTruncated Boolean          @default(false) @map("output_truncated")

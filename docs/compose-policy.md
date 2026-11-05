@@ -1,6 +1,6 @@
 # Direct Compose contract, version 2
 
-Step 1 of the [implementation plan](llm-compose-plan.md) is implemented: shared types, a revision envelope gate, policy constants, and a hand-authored fixture. The current API, fake generator, and runner still use version 1. Version 2 is not activated. The YAML validator, persistence integration, and runner integration remain steps 2–5. These constants are a contract for those steps, not an execution authorization mechanism.
+Step 1 of the [implementation plan](llm-compose-plan.md) is implemented: shared types, a revision envelope gate, policy constants, and a hand-authored fixture. The current API, fake generator, and runner still use version 1. Version 2 is not activated. Steps 2–4 now add supplied-value input, the provider adapter, and gated [YAML validation/persistence](compose-validation.md). Runner integration remains step 5. Policy constants or a valid envelope alone never authorize execution.
 
 ## Transport and persistence
 
@@ -11,7 +11,7 @@ The new types live in `packages/contracts/src/compose.ts`. They are exported sep
 - `ComposeGenerationResponse` identifies OpenRouter and the exact accepted model while retaining safe status fields. Existing responses still identify the fake provider until integration.
 - `ComposeRevisionMetadata` has `format: llm-compose`, `schemaVersion: 2`, `policyVersion: "2"`, `catalogVersion: 1`, `identity`, `services`, and `environment`. Persist it alongside the exact Compose string and lowercase SHA-256 digest. Metadata describes validated images, ports, mounts, and references for inspection; it never supplies a new executable document.
 
-`composeIdentity` requires server-issued UUIDs and sets project name to `dic-<configId>`. `readComposeRevisionCandidate` rejects legacy/unknown versions, unknown envelope fields, ownership/revision/project mismatches, blank/oversized documents, and digest mismatches. It preserves all document bytes. Its returned service/reference metadata remains `unknown` until the future YAML validator derives and compares it. A valid header or matching digest alone never permits Docker execution.
+`composeIdentity` requires server-issued UUIDs and sets project name to `dic-<configId>`. `readComposeRevisionCandidate` rejects legacy/unknown versions, unknown envelope fields, ownership/revision/project mismatches, blank/oversized documents, and digest mismatches. It preserves all document bytes. Its returned service/reference metadata remains `unknown` until `validateSavedCompose` derives and compares it. A valid header or matching digest alone never permits Docker execution.
 
 Existing version 1 data is unsupported by this new gate. It is not converted or deleted. Production switches only once generation, validation, and runtime integration are ready, following the operator cutoff in the plan.
 
@@ -19,7 +19,7 @@ Existing version 1 data is unsupported by this new gate. It is not converted or 
 
 `apps/api/src/configs/compose.policy.ts` holds versioned allowlists and exact required settings. The implemented provider prompt includes these settings and server identities before generation. Missing settings require repair/failure; the application must not inject defaults into generated YAML.
 
-The future validator must enforce all of the following before save and again before execution:
+The validator now enforces the following before saving version 2 revisions. Step 5 must invoke it again before execution:
 
 | Area         | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -40,10 +40,10 @@ In command/health strings, `$$` escapes a container-side dollar sign. All Compos
 
 ## Fixtures and verification boundary
 
-`apps/api/test/fixtures/direct-compose.yaml` is a hand-authored Node example with exact labels, isolation settings, and one opaque environment binding. It is used to prove byte preservation through the envelope gate; it has not been executed or approved by a YAML validator yet.
+`apps/api/test/fixtures/direct-compose.yaml` is a hand-authored Node example with exact labels, isolation settings, and one opaque environment binding. It is used to prove byte preservation through the envelope gate; it is now accepted by the strict validator, alongside a frozen four-image fixture; this does not prove healthy execution.
 
-Step 4 must test this positive fixture and database/multi-service fixtures against the complete policy. Required negative fixture families are malformed/duplicate/multiple YAML documents; aliases/tags/merge keys; extra fields at every nested level; image substitution; unsafe mounts/build/devices/capabilities/host access; network/label/port changes; missing resource/log limits; unknown/misassigned interpolation; and cyclic dependencies. They are separate from the ten generation evaluation cases and must run without provider calls or Docker.
+Step 4 tests these positive fixtures and individual image subsets against the complete policy. Required negative fixture families are malformed/duplicate/multiple YAML documents; aliases/tags/merge keys; extra fields at every nested level; image substitution; unsafe mounts/build/devices/capabilities/host access; network/label/port changes; missing resource/log limits; unknown/misassigned interpolation; and cyclic dependencies. They are separate from the ten generation evaluation cases and must run without provider calls or Docker.
 
-Run `pnpm test:compose-contract` for the current envelope/integrity tests without MySQL, Docker, credentials, or environment-file loading. These checks do not claim YAML policy acceptance, healthy startup, or evaluation scores.
+Run `pnpm test:compose-contract` for envelope/integrity tests and `pnpm test:compose-validation` for the strict YAML/policy tests without MySQL, Docker, credentials, or environment-file loading. These checks do not claim YAML policy acceptance, healthy startup, or evaluation scores.
 
 The syntax choices follow the official [Compose services reference](https://docs.docker.com/reference/compose-file/services/) and [network reference](https://docs.docker.com/reference/compose-file/networks/); this application's subset is deliberately narrower.

@@ -1,4 +1,3 @@
-import { BadRequestException } from "@nestjs/common";
 import { plainToInstance } from "class-transformer";
 import { validateSync } from "class-validator";
 import type { ConfigServiceInput } from "@docker-image-creator/contracts";
@@ -6,29 +5,8 @@ import { ConfigServiceDto } from "./config.dto";
 import { CATALOG } from "./image.catalog";
 export { CATALOG } from "./image.catalog";
 
-export function validateServices(services: ConfigServiceInput[]): void {
-  const names = new Set<string>();
-  const ports = new Set<number>();
-  for (const service of services) {
-    const database = service.image === "mysql" || service.image === "mongodb";
-    if (
-      names.has(service.name) ||
-      database !== (service.type === "database") ||
-      (database && service.language !== undefined) ||
-      (!database && service.database !== undefined) ||
-      (service.language !== undefined &&
-        service.language !==
-          (service.image === "node" ? "javascript" : "python")) ||
-      (service.hostPort !== undefined && ports.has(service.hostPort))
-    ) {
-      throw new BadRequestException(
-        "Service settings conflict with the catalog",
-      );
-    }
-    names.add(service.name);
-    if (service.hostPort !== undefined) ports.add(service.hostPort);
-  }
-}
+export { validateServices } from "./service.validation";
+import { validateServices } from "./service.validation";
 
 export function parseCandidate(
   raw: string,

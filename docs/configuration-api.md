@@ -2,6 +2,8 @@
 
 Implemented: owned MySQL configurations, immutable initial revisions, durable generation attempts, encrypted inputs/output and generated database secrets, private Compose artifacts, asynchronous status polling, a soft-deletion endpoint with durable artifact cleanup, and Vue creation/list/detail views. This milestone uses a deterministic development provider, not a live LLM. It does not start Docker workloads or claim that generated images have passed runtime validation. Vue list and detail pages include confirmed deletion.
 
+The gated [version 2 generation path](compose-validation.md) now validates and saves exact model-authored Compose with encrypted supplied bindings and actual provider/model status. It remains disabled until runner integration; the active production path below still uses version 1.
+
 All routes use `/api/v1`, bearer access tokens, origin checks, and `Cache-Control: no-store`. Unauthorized access returns 401; another user's configuration or generation returns 404. Sessions are rechecked on each poll. Shared types are in `packages/contracts/src/index.ts`.
 
 The later [runtime API](runtime-api.md) adds explicit Start/Stop and operation/deployment polling without changing generation behavior. For a stopped deployment, DELETE now returns 202 and delegates scoped container/network/artifact cleanup to the runner; see [runtime deletion](runtime-api.md#delete-a-stopped-configuration). Named volumes and recovery metadata are preserved. The immediate artifact-only contract below applies to never-started configurations.

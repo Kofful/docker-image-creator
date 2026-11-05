@@ -24,9 +24,10 @@ import {
 } from "../generated/prisma/client";
 import { operationResponse } from "../runtime/runtime.service";
 import { SecretBox } from "./secret-box";
-import { validateServices } from "./compose.compiler";
+import { validateServices } from "./service.validation";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
 import { GenerationSettings } from "./generation.settings";
+import { COMPOSE_MODEL } from "./compose.provider";
 import { prepareComposeInput } from "./compose.environment";
 import { environmentInputError } from "@docker-image-creator/contracts";
 
@@ -40,6 +41,23 @@ export function generationResponse(
     GENERATION_FAILED: "Generation could not be completed.",
     STORAGE_FAILED: "The Compose file could not be saved.",
     INTERRUPTED: "Generation was interrupted. Create a new attempt to retry.",
+    PROVIDER_NOT_CONFIGURED: "The generation provider is not configured.",
+    PROVIDER_AUTH_FAILED: "The generation provider rejected its credentials.",
+    PROVIDER_CREDITS_REQUIRED:
+      "The free model could not be used with the current provider account.",
+    MODEL_UNAVAILABLE: "The selected model is unavailable.",
+    PROVIDER_RATE_LIMITED: "The generation provider rate limit was reached.",
+    PROVIDER_UNAVAILABLE: "The generation provider is unavailable.",
+    PROVIDER_REQUEST_FAILED:
+      "The generation provider could not complete the request.",
+    PROVIDER_INVALID_RESPONSE:
+      "The generation provider returned an invalid response.",
+    PROVIDER_MODEL_MISMATCH:
+      "The generation provider returned a different model.",
+    OUTPUT_EMPTY: "The generation provider returned no document.",
+    OUTPUT_TRUNCATED:
+      "The generation provider returned an incomplete document.",
+    INVALID_INPUT: "The stored generation requirements could not be verified.",
     QUEUE_EXPIRED: "Generation could not start before its queue deadline.",
   };
   return {
@@ -47,11 +65,16 @@ export function generationResponse(
     configId: row.configId,
     status: row.status,
     stage: row.stage,
-    provider: "fake",
+    provider: row.provider === "openrouter" ? "openrouter" : "fake",
+    ...(row.provider === "openrouter" && row.model === COMPOSE_MODEL
+      ? { inputVersion: 2 as const, model: COMPOSE_MODEL }
+      : {}),
     error: row.errorCode
       ? {
           code: row.errorCode,
-          message: messages[row.errorCode] ?? "Generation failed.",
+          message:
+            messages[row.errorCode] ??
+            "The generated Compose document failed policy validation.",
         }
       : null,
     createdAt: row.createdAt.toISOString(),
@@ -160,6 +183,8 @@ export class ConfigsService {
           generations: {
             create: {
               id: generationId,
+              provider: versioned ? "openrouter" : "fake",
+              model: versioned ? COMPOSE_MODEL : null,
               inputEncrypted: this.box.seal(
                 JSON.stringify(prepared?.requirements ?? input),
                 generationId,

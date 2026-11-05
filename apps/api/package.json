@@ -13,7 +13,8 @@
     "test": "pnpm build && tsc -p tsconfig.test.json && node scripts/test-auth.mjs",
     "test:runtime": "pnpm build && node scripts/test-runtime.mjs",
     "test:compose-contract": "tsc -p tsconfig.compose-contract.json && node dist-test/test/compose-contract.test.js",
-    "test:compose-provider": "tsc -p tsconfig.compose-provider.json && node dist-test/test/compose-provider.test.js"
+    "test:compose-provider": "tsc -p tsconfig.compose-provider.json && node dist-test/test/compose-provider.test.js",
+    "test:compose-validation": "tsc -p tsconfig.compose-validation.json && node dist-test/test/compose-validation.test.js"
   },
   "dependencies": {
     "@docker-image-creator/contracts": "workspace:*",
@@ -29,7 +30,8 @@
     "class-validator": "0.14.2",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
-    "ws": "8.22.1"
+    "ws": "8.22.1",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@nestjs/testing": "11.1.6",

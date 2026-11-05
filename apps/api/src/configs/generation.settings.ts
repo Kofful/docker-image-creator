@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 export class GenerationSettings {
   // Activate only after direct generation and runner validation are integrated.
   readonly suppliedEnvironmentEnabled = false;
+  // Queue integration is testable independently; enable together at cutover.
+  readonly directComposeGenerationEnabled = false;
   readonly root = resolve(
     process.env.CONFIG_ARTIFACT_ROOT ??
       resolve(__dirname, "../../../../.runtime/configs"),

@@ -18,6 +18,7 @@ export class ComposeGenerator {
     input: ComposeGenerationRequirements,
     signal: AbortSignal,
     validate: (compose: string) => T,
+    capture?: (response: ComposeProviderResult) => Promise<void>,
   ): Promise<{ value: T; responses: ComposeProviderResult[] }> {
     return withinComposeDeadline(
       signal,
@@ -29,6 +30,8 @@ export class ComposeGenerator {
           const response = await this.provider.generate(input, bounded, repair);
           if (bounded.aborted) throw bounded.reason;
           responses.push(response);
+          await capture?.(response);
+          if (bounded.aborted) throw bounded.reason;
           try {
             return { value: validate(response.compose), responses };
           } catch (error) {

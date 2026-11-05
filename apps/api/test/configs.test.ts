@@ -33,6 +33,20 @@ import {
   type GenerationInput,
 } from "../src/configs/generation.provider";
 import { GenerationSettings } from "../src/configs/generation.settings";
+import { allRequirements, fixture, identity } from "./compose-test-fixtures";
+import {
+  ComposeGenerationProvider,
+  COMPOSE_MODEL,
+  ComposeProviderFailure,
+  type ComposeProviderResult,
+  type ComposeValidationCode,
+} from "../src/configs/compose.provider";
+import type {
+  ComposeGenerationRequirements,
+  ComposeRevisionMetadata,
+} from "@docker-image-creator/contracts";
+import { validateSavedCompose } from "../src/configs/compose.validator";
+import { ComposeGenerator } from "../src/configs/compose.generator";
 import { GenerationWorker } from "../src/configs/generation.worker";
 import { SecretBox } from "../src/configs/secret-box";
 import {
@@ -49,6 +63,11 @@ let root: string;
 let auth: AuthResponse;
 let settings: GenerationSettings;
 let generate: (input: GenerationInput, signal: AbortSignal) => Promise<string>;
+let generateCompose: (
+  input: ComposeGenerationRequirements,
+  signal: AbortSignal,
+  repair?: ComposeValidationCode,
+) => Promise<ComposeProviderResult>;
 const input: CreateConfigRequest = {
   name: "Starter and database",
   instructions: "Use catalog services",
@@ -68,6 +87,14 @@ async function start() {
   const module = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(GenerationSettings)
     .useValue(settings)
+    .overrideProvider(ComposeGenerationProvider)
+    .useValue({
+      generate: (
+        value: ComposeGenerationRequirements,
+        signal: AbortSignal,
+        repair?: ComposeValidationCode,
+      ) => generateCompose(value, signal, repair),
+    })
     .overrideProvider(GenerationProvider)
     .useValue({
       generate: (value: GenerationInput, signal: AbortSignal) =>
@@ -95,6 +122,9 @@ beforeEach(async () => {
   });
   generate = async (value) =>
     JSON.stringify({ schemaVersion: 1, services: value.services });
+  generateCompose = async () => {
+    throw new ComposeProviderFailure("PROVIDER_NOT_CONFIGURED");
+  };
   await start();
   await prisma.configuration.deleteMany();
   await prisma.generationSlot.updateMany({
@@ -399,6 +429,7 @@ test("two workers claim each job once and obey the two-slot global cap", async (
     app.get(SecretBox),
     app.get(ArtifactStore),
     app.get(ConfigArtifactCleanup),
+    app.get(ComposeGenerator),
   );
   await Promise.all([worker.tick(), second.tick()]);
   for (let i = 0; calls < 2 && i < 50; i++) await setTimeout(10);
@@ -1144,4 +1175,535 @@ test("environment validation rejects incomplete, ambiguous, unsupported, and unv
   }
   assert.equal(await prisma.configuration.count(), 0);
   assert.equal(await prisma.suppliedEnvironmentValue.count(), 0);
+});
+
+function directInput(): CreateComposeConfigRequest {
+  return {
+    inputVersion: 2,
+    name: "Direct model output",
+    services: structuredClone(allRequirements.services),
+    environmentValues: allRequirements.environment.map((entry, i) => ({
+      key: `value_${i}`,
+      purpose: entry.purpose,
+      value: `private-test-value-${i}-'$\n#=é-\\`,
+    })),
+    environmentBindings: allRequirements.environment.flatMap((entry, i) =>
+      entry.bindings.map((binding) => ({ ...binding, valueKey: `value_${i}` })),
+    ),
+  };
+}
+function directCaptures(encrypted: string, id: string): string[] {
+  const encoded = JSON.parse(
+    app.get(SecretBox).open(encrypted, id),
+  ) as string[];
+  return encoded.map((value) => Buffer.from(value, "base64").toString("utf8"));
+}
+function enableDirect() {
+  Object.assign(settings, {
+    suppliedEnvironmentEnabled: true,
+    directComposeGenerationEnabled: true,
+  });
+  generate = async () => {
+    throw new Error("Legacy generation must not run");
+  };
+}
+function directYaml(input: ComposeGenerationRequirements): string {
+  // Tests substitute only server-issued fixture identities/references; production
+  // never creates YAML from these fixtures or from derived metadata.
+  let raw = fixture("direct-compose-all.yaml");
+  for (const key of ["userId", "configId", "revisionId"] as const)
+    raw = raw.replaceAll(identity[key], input.identity[key]);
+  for (const entry of allRequirements.environment) {
+    const matching = input.environment.find(
+      (value) => value.purpose === entry.purpose,
+    )!;
+    raw = raw.replaceAll(entry.reference, matching.reference);
+  }
+  return raw;
+}
+function providerResult(compose: string): ComposeProviderResult {
+  return {
+    compose,
+    provider: "openrouter",
+    model: COMPOSE_MODEL,
+    reportedModel: COMPOSE_MODEL,
+    elapsedMs: 10,
+    httpAttempts: 1,
+    usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300 },
+  };
+}
+
+test("direct generation persists exact model bytes, metadata and encrypted captures without generating secrets or starting Docker", async () => {
+  enableDirect();
+  const body = directInput();
+  let raw = "";
+  let calls = 0;
+  let requirements!: ComposeGenerationRequirements;
+  generateCompose = async (input) => {
+    requirements = input;
+    calls++;
+    raw = directYaml(input);
+    for (const value of body.environmentValues)
+      assert.equal(
+        JSON.stringify(input).includes(JSON.stringify(value.value)),
+        false,
+      );
+    return providerResult(raw);
+  };
+  const key = randomUUID();
+  const created = (await create(body, auth.access_token, key).expect(202))
+    .body as CreateConfigResponse;
+  assert.deepEqual(
+    (await create(body, auth.access_token, key).expect(202)).body,
+    created,
+  );
+  assert.equal((await status(created.generationId)).provider, "openrouter");
+  await worker.tick();
+  const result = await finished(created.generationId);
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.model, COMPOSE_MODEL);
+  assert.equal(result.runtimeValidation, "not_performed");
+  assert.equal(calls, 1);
+  const revision = await prisma.configRevision.findUniqueOrThrow({
+    where: { generationId: created.generationId },
+  });
+  assert.equal(revision.compose, raw);
+  assert.equal(await readFile(join(root, revision.artifactPath), "utf8"), raw);
+  assert.equal(revision.digest, createHash("sha256").update(raw).digest("hex"));
+  const artifact = validateSavedCompose(
+    revision.spec,
+    revision.compose,
+    revision.digest,
+    requirements,
+  );
+  assert.equal(artifact.metadata.services.length, 4);
+  assert.equal(
+    (revision.spec as unknown as ComposeRevisionMetadata).schemaVersion,
+    2,
+  );
+  assert.equal(await prisma.configSecret.count(), 0);
+  assert.equal(await prisma.runtimeOperation.count(), 0);
+  assert.equal(await prisma.deployment.count(), 0);
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [raw]);
+  assert.equal(job.outputEncrypted!.includes(raw), false);
+  assert.deepEqual(job.providerResponses, [
+    {
+      provider: "openrouter",
+      model: COMPOSE_MODEL,
+      reportedModel: COMPOSE_MODEL,
+      elapsedMs: 10,
+      httpAttempts: 1,
+      usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300 },
+    },
+  ]);
+  for (const value of body.environmentValues)
+    assert.equal(
+      JSON.stringify(revision).includes(JSON.stringify(value.value)),
+      false,
+    );
+  const response = await request(app.getHttpServer())
+    .get(`/api/v1/configs/${created.configId}`)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(200);
+  assert.equal((response.body as ConfigResponse).revision!.compose, raw);
+  assert.equal(response.text.includes("providerResponses"), false);
+  assert.equal(response.text.includes("outputEncrypted"), false);
+  const other = await register();
+  await request(app.getHttpServer())
+    .get(created.statusUrl)
+    .auth(other.access_token, { type: "bearer" })
+    .expect(404);
+});
+
+test("direct validation repairs once, retaining both encrypted responses and publishing only accepted bytes", async () => {
+  enableDirect();
+  let calls = 0;
+  let accepted = "";
+  const invalid = "services: [private-test-invalid";
+  generateCompose = async (input, _signal, repair) => {
+    calls++;
+    assert.equal(repair, calls === 1 ? undefined : "INVALID_YAML");
+    accepted = directYaml(input);
+    return providerResult(calls === 1 ? invalid : accepted);
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal((await finished(created.generationId)).status, "succeeded");
+  assert.equal(calls, 2);
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [
+    invalid,
+    accepted,
+  ]);
+  assert.equal((job.providerResponses as unknown[]).length, 2);
+  assert.equal(
+    (
+      await prisma.configRevision.findUniqueOrThrow({
+        where: { generationId: job.id },
+      })
+    ).compose,
+    accepted,
+  );
+});
+
+test("two invalid direct responses are captured encrypted and cannot publish revisions or artifacts", async () => {
+  enableDirect();
+  let calls = 0;
+  const invalid = "private-invalid-model-output";
+  generateCompose = async () => {
+    calls++;
+    return providerResult(invalid);
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "INVALID_YAML",
+  );
+  assert.equal(calls, 2);
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [
+    invalid,
+    invalid,
+  ]);
+  assert.equal(await prisma.configRevision.count(), 0);
+  await assert.rejects(stat(join(root, auth.user.id)), { code: "ENOENT" });
+});
+
+test("repair provider failures retain the first response and do not fall back to the compiler", async () => {
+  enableDirect();
+  let calls = 0;
+  generateCompose = async () => {
+    if (++calls === 2)
+      throw new ComposeProviderFailure("PROVIDER_RATE_LIMITED");
+    return providerResult("invalid");
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "PROVIDER_RATE_LIMITED",
+  );
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), ["invalid"]);
+  assert.equal(await prisma.configRevision.count(), 0);
+});
+
+test("direct provider configuration failure is explicit with no fallback", async () => {
+  enableDirect();
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "PROVIDER_NOT_CONFIGURED",
+  );
+  assert.equal(await prisma.configRevision.count(), 0);
+});
+
+test("direct deadline fences a provider ignoring cancellation, including late captures", async () => {
+  enableDirect();
+  Object.assign(settings, { generationMs: 80 });
+  let release!: () => void;
+  generateCompose = async (input) => {
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "GENERATION_TIMEOUT",
+  );
+  release();
+  await setTimeout(40);
+  assert.equal(await prisma.configRevision.count(), 0);
+  assert.equal(
+    (
+      await prisma.generationAttempt.findUniqueOrThrow({
+        where: { id: created.generationId },
+      })
+    ).outputEncrypted,
+    null,
+  );
+});
+
+test("direct publication cannot succeed after its lease is revoked", async () => {
+  enableDirect();
+  let release!: () => void;
+  let entered = false;
+  generateCompose = async (input) => {
+    entered = true;
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  for (let i = 0; !entered && i < 100; i++) await setTimeout(5);
+  assert.equal(entered, true);
+  await prisma.generationAttempt.update({
+    where: { id: created.generationId },
+    data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+  });
+  await worker.tick();
+  release();
+  await setTimeout(60);
+  assert.equal((await status(created.generationId)).status, "failed");
+  assert.equal(await prisma.configRevision.count(), 0);
+  await assert.rejects(
+    stat(
+      join(
+        root,
+        auth.user.id,
+        created.configId,
+        created.generationId,
+        "compose.yaml",
+      ),
+    ),
+    { code: "ENOENT" },
+  );
+});
+
+test("direct jobs survive queue restart and completed publication does not call the provider twice", async () => {
+  enableDirect();
+  let calls = 0;
+  generateCompose = async (input) => {
+    calls++;
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.onModuleDestroy();
+  await app.close();
+  await start();
+  await worker.tick();
+  assert.equal((await finished(created.generationId)).status, "succeeded");
+  await worker.onModuleDestroy();
+  await app.close();
+  await start();
+  await worker.tick();
+  assert.equal(calls, 1);
+  assert.equal((await status(created.generationId)).status, "succeeded");
+});
+
+test("direct input metadata must agree with stored scoped bindings before calling a provider", async () => {
+  enableDirect();
+  let calls = 0;
+  generateCompose = async (input) => {
+    calls++;
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await prisma.serviceEnvironmentBinding.deleteMany({
+    where: { configId: created.configId, service: "web" },
+  });
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "INVALID_INPUT",
+  );
+  assert.equal(calls, 0);
+  assert.equal(await prisma.configRevision.count(), 0);
+});
+
+test("direct storage failure rolls back success and leaves no executable revision", async () => {
+  enableDirect();
+  generateCompose = async (input) => providerResult(directYaml(input));
+  app.get(ArtifactStore).write = async () => {
+    throw new Error("private-storage-exception");
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "STORAGE_FAILED",
+  );
+  assert.equal(await prisma.configRevision.count(), 0);
+});
+
+test("direct oversized mock response is bounded and rejected without repair", async () => {
+  enableDirect();
+  let calls = 0;
+  generateCompose = async () => {
+    calls++;
+    return providerResult("x".repeat(settings.maxOutputBytes + 100));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "OUTPUT_TOO_LARGE",
+  );
+  assert.equal(calls, 1);
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  const captures = directCaptures(job.outputEncrypted!, job.id);
+  assert.equal(Buffer.byteLength(captures[0]!), settings.maxOutputBytes);
+  assert.equal(job.outputTruncated, true);
+  assert.equal(await prisma.configRevision.count(), 0);
+});
+
+test("direct rejected control-character responses stay within encrypted database capture limits", async () => {
+  enableDirect();
+  Object.assign(settings, { generationMs: 5000 });
+  const raw = "\0".repeat(settings.maxOutputBytes);
+  generateCompose = async () => providerResult(raw);
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal(
+    (await finished(created.generationId)).error?.code,
+    "INVALID_YAML",
+  );
+  const job = await prisma.generationAttempt.findUniqueOrThrow({
+    where: { id: created.generationId },
+  });
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [raw, raw]);
+  assert.ok(Buffer.byteLength(job.outputEncrypted!) < 4 * 1024 * 1024);
+});
+
+test("direct publication checks the durable deadline as well as the lease", async () => {
+  enableDirect();
+  generateCompose = async (input) => {
+    await prisma.generationAttempt.update({
+      where: { id: input.identity.revisionId },
+      data: { deadlineAt: new Date(Date.now() - 1) },
+    });
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal((await finished(created.generationId)).status, "failed");
+  assert.equal(await prisma.configRevision.count(), 0);
+  await assert.rejects(
+    stat(
+      join(
+        root,
+        auth.user.id,
+        created.configId,
+        created.generationId,
+        "compose.yaml",
+      ),
+    ),
+    { code: "ENOENT" },
+  );
+});
+
+test("direct publication serializes with deletion and cannot revive a deleted config", async () => {
+  enableDirect();
+  generateCompose = async (input) => {
+    await prisma.configuration.update({
+      where: { id: input.identity.configId },
+      data: { deletedAt: new Date() },
+    });
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput()).expect(202))
+    .body as CreateConfigResponse;
+  await worker.tick();
+  for (let i = 0; i < 100; i++) {
+    const job = await prisma.generationAttempt.findUniqueOrThrow({
+      where: { id: created.generationId },
+    });
+    if (job.status === "failed") break;
+    await setTimeout(5);
+  }
+  assert.equal(
+    (
+      await prisma.generationAttempt.findUniqueOrThrow({
+        where: { id: created.generationId },
+      })
+    ).status,
+    "failed",
+  );
+  assert.equal(await prisma.configRevision.count(), 0);
+});
+
+test("direct queue selection excludes legacy jobs at cutover and two workers claim a new job once", async () => {
+  const legacy = (await create().expect(202)).body as CreateConfigResponse;
+  const other = await register();
+  enableDirect();
+  let calls = 0;
+  generateCompose = async (input) => {
+    calls++;
+    await setTimeout(30);
+    return providerResult(directYaml(input));
+  };
+  const created = (await create(directInput(), other.access_token).expect(202))
+    .body as CreateConfigResponse;
+  const second = new GenerationWorker(
+    prisma,
+    app.get(GenerationProvider),
+    settings,
+    app.get(SecretBox),
+    app.get(ArtifactStore),
+    app.get(ConfigArtifactCleanup),
+    app.get(ComposeGenerator),
+  );
+  try {
+    await Promise.all([worker.tick(), second.tick()]);
+    assert.equal(
+      (await finished(created.generationId, other.access_token)).status,
+      "succeeded",
+    );
+    assert.equal(calls, 1);
+    assert.equal((await status(legacy.generationId)).status, "queued");
+  } finally {
+    await second.onModuleDestroy();
+  }
+});
+
+test("accepted direct fixture parses with actual Compose using only explicit disposable interpolation", () => {
+  execFileSync(
+    "docker",
+    [
+      "compose",
+      "--env-file",
+      "/dev/null",
+      "--project-directory",
+      root,
+      "-f",
+      "-",
+      "config",
+      "--quiet",
+    ],
+    {
+      input: fixture("direct-compose-all.yaml"),
+      env: {
+        PATH: process.env.PATH,
+        COMPOSE_DISABLE_ENV_FILE: "1",
+        ...Object.fromEntries(
+          allRequirements.environment.map((entry) => [
+            entry.reference,
+            'disposable-$-quote-"-newline\nvalue',
+          ]),
+        ),
+      },
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
 });
