@@ -1,0 +1,37 @@
+# Direct Compose provider adapter
+
+Step 3 is implemented and registered in Nest, but is not used by the active generation worker. The supplied-environment capability remains disabled. Steps 4–5 must validate and persist the document, integrate the durable queue and runner, and verify execution before activation. Existing public generation responses continue to identify the active fake provider until that integration.
+
+## Configuration and request boundary
+
+The operator supplies `OPENROUTER_API_KEY` to the API process. The secret-free root `.env.example` documents an empty placeholder, and `infra/docker-compose.yml` passes only that variable to the API. The development override inherits it. It is not passed to web, runner, or infrastructure MySQL. Source development uses an exported process variable; no adapter code imports dotenv, reads environment files, configures credentials, or makes a startup inference request. Restart the API after changing process configuration. An absent/blank key produces `PROVIDER_NOT_CONFIGURED` when called, without making an HTTP request; the inactive adapter does not block application startup.
+
+`OpenRouterGenerationProvider` implements the typed `ComposeGenerationProvider` seam, a specialization of the existing `GenerationProvider`. The old worker keeps its separate legacy input/string provider until step 4. This separation prevents direct YAML from entering the old JSON parser/compiler and permits a database-independent evaluator to reuse the new provider.
+
+The adapter calls only `POST https://openrouter.ai/api/v1/chat/completions`, with bearer authentication, `model: google/gemma-4-26b-a4b-it:free`, non-streaming output, temperature `0.2`, and `max_tokens: 16384`. Provider price ceilings for prompt, completion, and per-request pricing are zero. There is no alternative model, router, model fallback list, tool, plugin, or response-healing request. Redirects are rejected so the credential cannot follow a redirected request.
+
+Prompt version 1 includes the pinned catalog, version 2 policy constants, exact resource/service labels, server-owned identities, selected services, instructions, and environment references/purposes/assignments. The prompt requests the complete runtime-ready document directly, including service behavior, health checks, bindings, isolation, resource limits, and storage. It does not contain starter commands or generated Compose. Explicit field selection strips private extra properties from the root, identity, services, references, and bindings. Actual supplied values and original request-local value keys are excluded. Instructions and purposes are intentionally model-visible; users must keep credentials out of those text fields.
+
+## Limits and returned metadata
+
+Every provider call has a five-minute maximum and honors an earlier caller deadline/cancellation. Product orchestration shares one five-minute deadline across both content responses and all HTTP retries. Fetch, response reads, and retry waits are bounded; cancellation releases response streams, including late responses from an injected transport. Timers and abort listeners are removed after completion.
+
+The JSON response body is limited to 8 MiB to accommodate JSON escaping and metadata; the extracted document is limited to 1 MiB of UTF-8. Invalid UTF-8/JSON, malformed schemas, multiple choices, tool calls, empty content, and incomplete finishes are rejected. A `length` finish is `OUTPUT_TRUNCATED`. Completed content is returned exactly as supplied, including whitespace and final newline. Fenced or unsafe YAML is still untrusted at this seam: it must reach the step 4 validator before persistence or execution.
+
+Results include `provider: openrouter`, the requested model, the reported model, elapsed time, HTTP attempt count, and available nonnegative integer prompt/completion/total token usage. Unavailable usage is omitted. The response may report the same base model slug without `:free`; that exact slug is retained as reported metadata, while the request still pins the free route and zero price ceilings. Every other reported model is rejected. Extra provider fields and raw error details are discarded; API-key and value data are never logged by this module. These fields are currently internal results, not new persisted/public generation fields.
+
+Network failures, HTTP 408/429/5xx, and matching numeric error envelopes in HTTP 200 responses permit at most two transient retries: three HTTP attempts per content request. Ordinary backoff is 500 ms then 1000 ms. Valid `Retry-After` seconds/dates are honored; a wait above 30 seconds fails explicitly instead of retrying early. All waits share the generation deadline. Authentication, credit, missing-model, and other permanent errors fail immediately. Safe codes distinguish provider configuration/auth/credit/rate-limit/unavailability/request/response/model failures, empty/truncated/oversized output, timeout, and interruption. Provider bodies, exception causes, and caller abort messages are not attached to these errors.
+
+## Repair and evaluation seam
+
+`ComposeGenerator.generateValidated` accepts a validator callback and permits one complete replacement after a typed `ComposeValidationFailure`. Feedback uses fixed policy categories and static text; it never forwards parser exception messages, YAML fragments, arbitrary feedback, or the previous untrusted document. A second validation failure ends generation. Provider failures and unexpected validator exceptions do not trigger a content repair. The product maximum is two content responses, each with at most three HTTP attempts, within one five-minute deadline. Returned successful results retain both response metadata objects for later encrypted capture and reporting integration.
+
+The evaluator will call `ComposeGenerationProvider.generate` directly and score its first complete response, without invoking repair orchestration. Transient transport retries remain bounded and are counted; they do not repair model content. The ten-case CLI and reports are still step 6, and no model-quality score has been measured yet.
+
+## Verification
+
+Run `pnpm test:compose-provider` without Docker, MySQL, credentials, or environment files. Its 29 mocked tests cover request construction/model pin/price limits, private-field exclusion, exact content preservation, metadata, missing credentials, error classification, retry bounds, malformed/empty/truncated/oversized output, body cancellation, timeout, shared product deadline, repair limits, first-response evaluation, and Nest dependency injection. The root `pnpm test` includes this suite.
+
+Verified on 2026-11-05: the 29 provider checks, nine contract checks, workspace type checks, lint, changed-file formatting, and Compose environment-boundary checks passed. No live inference, protected environment-file access, database migration, application image build, deployment, or ten-case benchmark was performed for this step.
+
+The official [Chat Completions API reference](https://openrouter.ai/docs/api_reference/overview), [error and Retry-After guide](https://openrouter.ai/docs/api_reference/errors-and-debugging), [provider pricing filters](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), and [selected model page](https://openrouter.ai/google/gemma-4-26b-a4b-it:free) were checked on 2026-11-05. Endpoint availability and free-account limits remain external conditions; mocked checks do not establish live availability.

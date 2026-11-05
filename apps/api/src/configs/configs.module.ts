@@ -12,6 +12,9 @@ import {
   GenerationProvider,
 } from "./generation.provider";
 import { GenerationWorker } from "./generation.worker";
+import { ComposeGenerationProvider } from "./compose.provider";
+import { OpenRouterGenerationProvider } from "./openrouter.provider";
+import { ComposeGenerator } from "./compose.generator";
 
 @Module({
   imports: [AuthModule],
@@ -24,6 +27,14 @@ import { GenerationWorker } from "./generation.worker";
     ArtifactStore,
     ConfigArtifactCleanup,
     GenerationWorker,
+    ComposeGenerator,
+    {
+      provide: ComposeGenerationProvider,
+      useFactory: () =>
+        new OpenRouterGenerationProvider({
+          apiKey: process.env.OPENROUTER_API_KEY,
+        }),
+    },
     { provide: GenerationProvider, useClass: FakeGenerationProvider },
   ],
 })

@@ -1,6 +1,6 @@
 # Direct LLM Compose generation and supplied secrets
 
-Status: implementation started on 2026-11-05. Step 1 is implemented and verified: shared version 2 contracts, revision format/scope/digest checks, catalog extraction, policy constants and fixture, and aligned agent instructions. See the [policy contract](compose-policy.md). Step 2 adds the gated [creation-time values and binding flow](supplied-environment.md). Production activation and steps 3–7 remain pending. Q10 supersedes the earlier compatibility recommendation: existing template-generated configurations are unsupported after activation. Q11–Q12 are accepted. [ADR 0004](adr/0004-direct-llm-compose-generation.md) records the decision.
+Status: implementation started on 2026-11-05. Step 1 is implemented and verified: shared version 2 contracts, revision format/scope/digest checks, catalog extraction, policy constants and fixture, and aligned agent instructions. See the [policy contract](compose-policy.md). Step 2 adds the gated [creation-time values and binding flow](supplied-environment.md). Step 3 adds the inactive [OpenRouter adapter](openrouter-adapter.md). Production activation and steps 4–7 remain pending. Q10 supersedes the earlier compatibility recommendation: existing template-generated configurations are unsupported after activation. Q11–Q12 are accepted. [ADR 0004](adr/0004-direct-llm-compose-generation.md) records the decision.
 
 ## Requirements supplied by the user
 
@@ -56,6 +56,8 @@ Gate: disposable MySQL migration replay and owner-scoped API tests prove encrypt
 
 ### 3. Implement the selected model adapter
 
+Implemented: typed direct-Compose provider, fixed OpenRouter endpoint/free model/zero price ceilings, value-free versioned prompt, bounded HTTP/response handling, safe errors and metadata, cancellation/transient retries, and one static-feedback product repair under a shared five-minute deadline. The adapter is registered separately from the active fake worker until step 4 integration. All 29 mocked provider checks and nine contract checks passed, along with workspace type checks/lint, formatting, and Compose environment-boundary checks. No credentials, live inference, database, or Docker daemon were used. See [adapter details and limits](openrouter-adapter.md).
+
 Implement OpenRouter behind `GenerationProvider`, using exactly `google/gemma-4-26b-a4b-it:free`. Read `OPENROUTER_API_KEY` from process environment supplied by operator-managed infrastructure configuration; document a placeholder in `.env.example`. Do not add implicit dotenv loading or expose the key to the frontend, workloads, or Docker child processes.
 
 Send service requirements, instructions, binding metadata, and the versioned policy contract. Request one complete Compose YAML document directly. Keep the five-minute generation deadline and bounded output/cancellation. Allow one content repair after validation failure in product generation, with redacted validation feedback and bounded transient retries within the same deadline. Record actual provider/model identity rather than the current hardcoded `fake` flag. A missing key or unavailable model produces an explicit failure, without fallback generation.
@@ -94,7 +96,7 @@ Gate: operator documentation covers configuration, reports, cutoff requirements,
 
 ## Design closure
 
-The interview frontier is empty: the user accepted the generation/evaluation boundaries, rejected legacy compatibility, and accepted creation-only values plus pre-generation completeness checks. The user subsequently authorized implementation. Work proceeds one verifiable slice at a time; steps 1–2 are complete and step 3 (the selected model adapter) is next. Supplied-value activation remains gated until generation and runner integration is ready.
+The interview frontier is empty: the user accepted the generation/evaluation boundaries, rejected legacy compatibility, and accepted creation-only values plus pre-generation completeness checks. The user subsequently authorized implementation. Work proceeds one verifiable slice at a time; steps 1–3 are complete and step 4 (strict YAML validation and model-output persistence) is next. Supplied-value activation remains gated until generation and runner integration is ready.
 
 ## Verified provider references
 

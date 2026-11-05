@@ -7,11 +7,11 @@ export interface GenerationInput {
   services: ConfigServiceInput[];
   instructions?: string;
 }
-export abstract class GenerationProvider {
-  abstract generate(
-    input: GenerationInput,
-    signal: AbortSignal,
-  ): Promise<string>;
+export abstract class GenerationProvider<
+  Input = GenerationInput,
+  Output = string,
+> {
+  abstract generate(input: Input, signal: AbortSignal): Promise<Output>;
 }
 
 // Explicit development provider: it does not interpret prose or make LLM calls.

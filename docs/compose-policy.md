@@ -7,7 +7,7 @@ Step 1 of the [implementation plan](llm-compose-plan.md) is implemented: shared 
 The new types live in `packages/contracts/src/compose.ts`. They are exported separately from the existing endpoint types so unfinished version 2 requests cannot silently enter version 1 endpoints.
 
 - `CreateComposeConfigRequest` adds `inputVersion: 2`, private `environmentValues`, and `environmentBindings` to the existing creation fields. A value has a request-local `key`, its actual `value`, and a `purpose`. A binding names its `service`, container environment `name`, and `valueKey`. Multiple bindings can refer to one value. Step 2 implements [validation, encrypted persistence, and gated UI submission](supplied-environment.md); activation waits for generation/runner integration.
-- `ComposeGenerationRequirements` contains service selections, instructions, server-issued identities, and `ComposeEnvironmentReference` entries. References contain only an opaque interpolation name, purpose, and service/name bindings. Actual values and request-local value keys are excluded from this provider contract. Step 3 must construct this payload explicitly rather than spread a creation request into a prompt.
+- `ComposeGenerationRequirements` contains service selections, instructions, server-issued identities, and `ComposeEnvironmentReference` entries. References contain only an opaque interpolation name, purpose, and service/name bindings. Actual values and request-local value keys are excluded from this provider contract. Step 3's [adapter](openrouter-adapter.md) constructs this payload explicitly rather than spreading a creation request into a prompt.
 - `ComposeGenerationResponse` identifies OpenRouter and the exact accepted model while retaining safe status fields. Existing responses still identify the fake provider until integration.
 - `ComposeRevisionMetadata` has `format: llm-compose`, `schemaVersion: 2`, `policyVersion: "2"`, `catalogVersion: 1`, `identity`, `services`, and `environment`. Persist it alongside the exact Compose string and lowercase SHA-256 digest. Metadata describes validated images, ports, mounts, and references for inspection; it never supplies a new executable document.
 
@@ -17,7 +17,7 @@ Existing version 1 data is unsupported by this new gate. It is not converted or 
 
 ## Required YAML subset
 
-`apps/api/src/configs/compose.policy.ts` holds versioned allowlists and exact required settings. The provider will receive these settings and server identities before generation. Missing settings require repair/failure; the application must not inject defaults into generated YAML.
+`apps/api/src/configs/compose.policy.ts` holds versioned allowlists and exact required settings. The implemented provider prompt includes these settings and server identities before generation. Missing settings require repair/failure; the application must not inject defaults into generated YAML.
 
 The future validator must enforce all of the following before save and again before execution:
 

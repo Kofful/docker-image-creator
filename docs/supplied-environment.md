@@ -55,4 +55,4 @@ Relevant checks are `pnpm test:api`, `pnpm test:web`, `pnpm test:compose-contrac
 
 Verified on 2026-11-05: all eight migrations applied and replayed; 102 backend tests passed with one older-Engine check skipped on the supported host, all 107 frontend tests and nine contract tests passed, and workspace type checks/lint plus the production web build passed. The concurrency test now waits for durable slot release instead of assuming a fixed commit delay. API/runner Dockerfile copy changes were reviewed but application images were not rebuilt or deployed.
 
-This slice makes no inference calls and does not activate supplied-value generation or prove generated Compose healthy. Step 3 implements the OpenRouter adapter; steps 4–5 integrate generation and execution before enabling the capability.
+This slice makes no inference calls and does not activate supplied-value generation or prove generated Compose healthy. The [step 3 OpenRouter adapter](openrouter-adapter.md) is now implemented and tested with mocked HTTP; steps 4–5 integrate generation and execution before enabling the capability.
