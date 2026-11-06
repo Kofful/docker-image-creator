@@ -36,9 +36,15 @@ import { RuntimeSettings, RuntimeWorker } from "../src/runtime/runtime.worker";
 import {
   digest,
   runtimeLabels,
-  revisionServices,
-  runtimeManifest,
+  savedRuntimeRevision,
+  runtimeEnvironmentSelect,
 } from "../src/runtime/runtime.manifest";
+import { runtimeFixture } from "./runtime-fixtures";
+import { composeIdentity } from "../src/configs/compose.revision";
+import {
+  ComposeGenerationProvider,
+  COMPOSE_MODEL,
+} from "../src/configs/compose.provider";
 import { unknownService } from "../src/runtime/runtime.observations";
 
 class ControlledDriver extends RuntimeDriver {
@@ -121,11 +127,30 @@ beforeEach(async () => {
   driver = new ControlledDriver();
   const settings = Object.assign(new GenerationSettings(), {
     root,
+    suppliedEnvironmentEnabled: true,
     pollMs: 3600000,
   });
   const module = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(GenerationSettings)
     .useValue(settings)
+    .overrideProvider(ComposeGenerationProvider)
+    .useValue({
+      generate: async (
+        input: import("@docker-image-creator/contracts").ComposeGenerationRequirements,
+      ) => ({
+        compose: runtimeFixture(
+          input.identity,
+          input.services,
+          input.environment,
+        ).manifest,
+        provider: "openrouter",
+        model: COMPOSE_MODEL,
+        reportedModel: COMPOSE_MODEL,
+        elapsedMs: 1,
+        httpAttempts: 1,
+        usage: {},
+      }),
+    })
     .overrideProvider(ArtifactStore)
     .useValue(new ArtifactStore(settings))
     .compile();
@@ -173,6 +198,23 @@ async function saved(owner = auth, hostPort?: number): Promise<ConfigResponse> {
       .auth(owner.access_token, { type: "bearer" })
       .send({
         name: "Runtime test",
+        inputVersion: 2,
+        environmentValues: [
+          {
+            key: "root",
+            value: "root-test-$value'\"\\\n",
+            purpose: "Root password",
+          },
+          {
+            key: "app",
+            value: "app-test-$value'\"\\\n",
+            purpose: "App password",
+          },
+        ],
+        environmentBindings: [
+          { service: "db", name: "MYSQL_ROOT_PASSWORD", valueKey: "root" },
+          { service: "db", name: "MYSQL_PASSWORD", valueKey: "app" },
+        ],
         services: [
           {
             name: "web",
@@ -294,7 +336,7 @@ test("Start returns a durable 202 before execution; runner prepares private secr
 });
 
 test("service observations are owner-scoped, read-only, and unknown before the runner observes resources", async () => {
-  const config = await saved(auth, 8081);
+  const config = await saved(auth);
   const path = `/api/v1/configs/${config.id}/services`;
   await request(app.getHttpServer()).get(path).expect(401);
   const other = await register();
@@ -339,7 +381,7 @@ test("service observations are owner-scoped, read-only, and unknown before the r
 });
 
 test("runner persists service observations through Start, partial health, unknown inspection, recovery, and Stop", async () => {
-  const config = await saved(auth, 8081);
+  const config = await saved(auth);
   const path = `/api/v1/configs/${config.id}/services`;
   const get = async () =>
     (
@@ -357,11 +399,7 @@ test("runner persists service observations through Start, partial health, unknow
   assert.equal(running.operationId, started.operationId);
   assert.equal(running.services[0]?.state, "running");
   assert.equal(running.services[0]?.health, "healthy");
-  assert.deepEqual(running.services[0]?.publishedPort, {
-    host: "127.0.0.1",
-    hostPort: 8081,
-    containerPort: 8000,
-  });
+  assert.equal(running.services[0]?.publishedPort, null);
   assert.ok(running.services[0]?.observedAt);
   driver.states.set(config.id, { running: true, ready: false });
   driver.observations.set(config.id, [
@@ -480,19 +518,13 @@ test("concurrent starts for different configurations reserve only one per user",
   );
 });
 
-test("concurrent users cannot reserve the same host port and the losing request leaves no reservation", async () => {
-  const other = await register();
-  const first = await saved(auth, 18080);
-  const second = await saved(other, 18080);
-  const results = await Promise.all([start(first), start(second, other)]);
-  assert.deepEqual(results.map((row) => row.status).sort(), [202, 409]);
-  assert.equal(await prisma.runtimePort.count({ where: { port: 18080 } }), 1);
+test("published ports are rejected before creating a configuration or reservation", async () => {
+  await assert.rejects(saved(auth, 18080));
   assert.equal(
-    await prisma.runtimeReservation.count({
-      where: { userId: { in: [auth.user.id, other.user.id] } },
-    }),
-    1,
+    await prisma.configuration.count({ where: { userId: auth.user.id } }),
+    0,
   );
+  assert.equal(await prisma.runtimePort.count(), 0);
 });
 
 test("another runner instance claims a persisted job only once while both runners scan", async () => {
@@ -628,7 +660,7 @@ test("failed readiness rolls back partial startup, preserves encrypted data/revi
   const revision = await prisma.configRevision.findUniqueOrThrow({
     where: { id: config.revision!.id },
   });
-  const secrets = await prisma.configSecret.findMany({
+  const secrets = await prisma.suppliedEnvironmentValue.findMany({
     where: { configId: config.id },
   });
   driver.failStart = true;
@@ -643,7 +675,9 @@ test("failed readiness rolls back partial startup, preserves encrypted data/revi
     0,
   );
   assert.deepEqual(
-    await prisma.configSecret.findMany({ where: { configId: config.id } }),
+    await prisma.suppliedEnvironmentValue.findMany({
+      where: { configId: config.id },
+    }),
     secrets,
   );
   assert.deepEqual(
@@ -672,7 +706,9 @@ test("failed rollback keeps its slot; a later explicit Stop releases it and pres
   await worker.tick();
   assert.equal((await finish(stopped.operationId)).status, "succeeded");
   assert.equal(
-    await prisma.configSecret.count({ where: { configId: config.id } }),
+    await prisma.suppliedEnvironmentValue.count({
+      where: { configId: config.id },
+    }),
     2,
   );
   await start(second).expect(202);
@@ -801,33 +837,17 @@ test("a tampered saved specification or Compose digest is rejected before queuei
   );
 });
 
-test("runtime manifest isolates workloads, drops raw sockets, labels all resources, and uses authenticated database probes", async () => {
-  const services = revisionServices({
-    schemaVersion: 1,
-    catalogVersion: 1,
-    services: [{ name: "db", type: "database", image: "mongodb" }],
-  });
-  const manifest = JSON.parse(
-    runtimeManifest(auth.user.id, randomUUID(), randomUUID(), services),
-  ) as {
-    networks: {
-      stack: { internal: boolean; driver_opts: Record<string, string> };
-    };
-    services: { db: { cap_drop: string[]; healthcheck: { test: string[] } } };
-    volumes: Record<string, { labels: object }>;
-  };
-  assert.equal(manifest.networks.stack.internal, true);
-  assert.equal(
-    manifest.networks.stack.driver_opts[
-      "com.docker.network.bridge.gateway_mode_ipv4"
-    ],
-    "isolated",
+test("a saved authored fixture has isolated networking, ownership labels and authenticated probes without recompilation", () => {
+  const target = runtimeFixture(
+    composeIdentity(auth.user.id, randomUUID(), randomUUID()),
+    [{ name: "db", type: "database", image: "mongodb" }],
   );
-  assert.deepEqual(manifest.services.db.cap_drop, ["NET_RAW"]);
-  assert.ok(manifest.services.db.healthcheck.test.includes("mongosh"));
-  assert.deepEqual(Object.keys(manifest.volumes), ["db-data", "db-configdb"]);
-  for (const volume of Object.values(manifest.volumes))
-    assert.ok(volume.labels);
+  assert.ok(target.manifest.includes("isolated"));
+  assert.ok(target.manifest.includes("mongosh"));
+  assert.deepEqual(
+    target.metadata.services[0]!.volumes.map((volume) => volume.source),
+    ["db-data", "db-configdb"],
+  );
 });
 
 test("real Docker capability gate rejects an older daemon before creating workloads", async (context) => {
@@ -843,26 +863,21 @@ test("real Docker capability gate rejects an older daemon before creating worklo
     return;
   }
   const config = await saved();
-  const services = revisionServices(
-    (
-      await prisma.configRevision.findUniqueOrThrow({
-        where: { id: config.revision!.id },
-      })
-    ).spec,
-  );
+  const row = await prisma.configuration.findUniqueOrThrow({
+    where: { id: config.id },
+    include: {
+      environmentValues: { select: runtimeEnvironmentSelect },
+      revisions: true,
+    },
+  });
+  const validated = savedRuntimeRevision(row, row.revisions[0]!);
   await assert.rejects(
     new DockerRuntimeDriver().start(
       {
         userId: auth.user.id,
         configId: config.id,
         revisionId: config.revision!.id,
-        services,
-        manifest: runtimeManifest(
-          auth.user.id,
-          config.id,
-          config.revision!.id,
-          services,
-        ),
+        ...validated,
         secrets: {},
       },
       AbortSignal.timeout(15000),
@@ -910,7 +925,7 @@ async function stoppedConfig() {
 }
 test("Delete queues owned stopped-resource cleanup, stays visible until verified, and retains volume recovery metadata", async () => {
   const config = await stoppedConfig();
-  const secrets = await prisma.configSecret.findMany({
+  const secrets = await prisma.suppliedEnvironmentValue.findMany({
     where: { configId: config.id },
   });
   const key = randomUUID();
@@ -944,7 +959,9 @@ test("Delete queues owned stopped-resource cleanup, stays visible until verified
   ).body as ConfigResponse[];
   assert.ok(!list.some((row) => row.id === config.id));
   assert.deepEqual(
-    await prisma.configSecret.findMany({ where: { configId: config.id } }),
+    await prisma.suppliedEnvironmentValue.findMany({
+      where: { configId: config.id },
+    }),
     secrets,
   );
   assert.ok(
@@ -1118,20 +1135,9 @@ test("real Docker Delete removes only its stopped containers/network and preserv
     "--label",
     `${key}=${value}`,
   ]);
-  const target: RuntimeTarget = {
-    userId,
-    configId,
-    revisionId,
-    services: [{ name: "db", type: "database", image: "mysql" }],
-    manifest: "",
-    secrets: {},
-  };
-  target.manifest = runtimeManifest(
-    userId,
-    configId,
-    revisionId,
-    target.services,
-  );
+  const target = runtimeFixture(composeIdentity(userId, configId, revisionId), [
+    { name: "db", type: "database", image: "mysql" },
+  ]);
   let container: string | undefined;
   let networkCreated = false,
     volumeCreated = false;
@@ -1247,4 +1253,122 @@ test("real Docker Delete removes only its stopped containers/network and preserv
       docker(["volume", "rm", volume]);
     }
   }
+});
+
+test("legacy Start, observations and cleanup are rejected and legacy queued jobs are left untouched", async () => {
+  const config = await saved();
+  await prisma.configuration.update({
+    where: { id: config.id },
+    data: { inputVersion: 1 },
+  });
+  await start(config).expect(400);
+  await request(app.getHttpServer())
+    .get(`/api/v1/configs/${config.id}/services`)
+    .auth(auth.access_token, { type: "bearer" })
+    .expect(400);
+  const operation = await prisma.runtimeOperation.create({
+    data: {
+      id: randomUUID(),
+      configId: config.id,
+      userId: auth.user.id,
+      revisionId: config.revision!.id,
+      type: "start",
+      requestKey: randomUUID(),
+    },
+  });
+  await worker.tick();
+  assert.equal(
+    (
+      await prisma.runtimeOperation.findUniqueOrThrow({
+        where: { id: operation.id },
+      })
+    ).status,
+    "queued",
+  );
+  assert.equal(driver.targets.length, 0);
+});
+
+test("a valid digest cannot authorize changed YAML or stored bindings", async () => {
+  const config = await saved();
+  const original = await prisma.configRevision.findUniqueOrThrow({
+    where: { id: config.revision!.id },
+  });
+  const compose = original.compose + "privileged: true\n";
+  await prisma.configRevision.update({
+    where: { id: original.id },
+    data: { compose, digest: digest(compose) },
+  });
+  await start(config).expect(400);
+  await prisma.configRevision.update({
+    where: { id: original.id },
+    data: { compose: original.compose, digest: original.digest },
+  });
+  await prisma.serviceEnvironmentBinding.updateMany({
+    where: { configId: config.id, name: "MYSQL_PASSWORD" },
+    data: { name: "OTHER_PASSWORD" },
+  });
+  await start(config).expect(400);
+  assert.equal(driver.targets.length, 0);
+  assert.equal(
+    await prisma.runtimeReservation.count({ where: { userId: auth.user.id } }),
+    0,
+  );
+});
+
+test("runner independently rejects revision or binding tampering after admission without calling Docker", async () => {
+  const config = await saved();
+  const accepted = (await start(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  await prisma.serviceEnvironmentBinding.updateMany({
+    where: { configId: config.id, name: "MYSQL_PASSWORD" },
+    data: { name: "OTHER_PASSWORD" },
+  });
+  await worker.tick();
+  const outcome = await finish(accepted.operationId);
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.error?.code, "INVALID_REVISION");
+  assert.equal(driver.targets.length, 0);
+  assert.equal(outcome.cleanupPending, true);
+});
+
+test("an expired durable deadline cannot publish successful runtime completion while its lease remains valid", async (t) => {
+  const config = await saved();
+  const accepted = (await start(config).expect(202))
+    .body as RuntimeAcceptedResponse;
+  let returned = false;
+  const startDriver = driver.start.bind(driver);
+  t.mock.method(
+    driver,
+    "start",
+    async (...args: Parameters<RuntimeDriver["start"]>) => {
+      await startDriver(...args);
+      await prisma.runtimeOperation.update({
+        where: { id: accepted.operationId },
+        data: { deadlineAt: new Date(0) },
+      });
+      returned = true;
+    },
+  );
+  await worker.tick();
+  for (let i = 0; !returned && i < 100; i++) await setTimeout(10);
+  await setTimeout(30);
+  const operation = await prisma.runtimeOperation.findUniqueOrThrow({
+    where: { id: accepted.operationId },
+  });
+  assert.notEqual(operation.status, "succeeded");
+  assert.equal(operation.completedAt, null);
+  await prisma.runtimeOperation.update({
+    where: { id: operation.id },
+    data: { leaseExpiresAt: new Date(0) },
+  });
+  await worker.tick();
+  assert.equal(
+    (
+      await prisma.runtimeOperation.findUniqueOrThrow({
+        where: { id: operation.id },
+      })
+    ).errorCode,
+    "INTERRUPTED",
+  );
+  assert.equal(driver.targets.length, 1);
 });

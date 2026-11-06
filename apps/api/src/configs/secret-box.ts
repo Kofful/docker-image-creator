@@ -45,7 +45,4 @@ export class SecretBox {
       "utf8",
     );
   }
-  password(): string {
-    return randomBytes(32).toString("base64url");
-  }
 }

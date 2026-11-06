@@ -1,5 +1,7 @@
 # Container terminals
 
+The [saved Compose execution boundary](saved-compose-runtime.md) now validates revision bytes, digest, metadata and stored bindings for tickets, ongoing authorization and shell cleanup. Legacy revisions are unsupported and cannot obtain tickets. No terminal path recompiles Compose.
+
 The console milestone adds **Connect** to each running service row on configuration detail. It opens `/configs/:id/console/:service` in the same browser tab. Start remains a separate explicit action. The browser terminal uses xterm.js; it does not run a local or host shell.
 
 The runner opens Bash (`/bin/bash`) when available, otherwise `/bin/sh`. Neither shell is installed automatically. A shellless image returns an explained failure to configuration detail. Exec inherits the container's configured user and working directory without granting extra privileges. Users can execute any command those permissions permit, including commands that break their own workload.

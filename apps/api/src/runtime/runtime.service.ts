@@ -15,9 +15,14 @@ import type {
 import { PrismaService } from "../database/prisma.service";
 import type { RuntimeOperation } from "../generated/prisma/client";
 import { Prisma } from "../generated/prisma/client";
-import { compileCompose, parseCandidate } from "../configs/compose.compiler";
+
 import { serviceObservations } from "./runtime.observations";
-import { digest, revisionServices, runtimeManifest } from "./runtime.manifest";
+import {
+  digest,
+  runtimeEnvironmentSelect,
+  runtimeRequirements,
+  savedRuntimeRevision,
+} from "./runtime.manifest";
 
 const errors: Record<string, string> = {
   IMAGE_PULL_FAILED:
@@ -78,6 +83,9 @@ export class RuntimeService {
           await tx.$queryRaw`SELECT id FROM configurations WHERE id = ${configId} AND user_id = ${userId} FOR UPDATE`;
           const config = await tx.configuration.findFirst({
             where: { id: configId, userId, deletedAt: null },
+            include: {
+              environmentValues: { select: runtimeEnvironmentSelect },
+            },
           });
           if (!config) throw new NotFoundException("Configuration not found");
           if (type === "start" && config.deletionRequestedAt)
@@ -131,16 +139,9 @@ export class RuntimeService {
               "A saved successful revision is required",
             );
           let manifest: string;
-          let services: ConfigServiceInput[];
           try {
-            services = revisionServices(revision.spec);
-            if (
-              digest(revision.compose) !== revision.digest ||
-              compileCompose(configId, revision.id, services) !==
-                revision.compose
-            )
-              throw new Error("INVALID_REVISION");
-            manifest = runtimeManifest(userId, configId, revision.id, services);
+            const saved = savedRuntimeRevision(config, revision);
+            manifest = saved.manifest;
           } catch {
             throw new BadRequestException(
               "The saved revision failed execution validation",
@@ -163,20 +164,6 @@ export class RuntimeService {
                 "Your running configuration must be verified stopped first",
               );
             await tx.runtimeReservation.create({ data: { userId, configId } });
-            for (const service of services)
-              if (service.hostPort !== undefined) {
-                const port = await tx.runtimePort.findUnique({
-                  where: { port: service.hostPort },
-                });
-                if (port && port.configId !== configId)
-                  throw new ConflictException(
-                    "A requested host port is reserved",
-                  );
-                if (!port)
-                  await tx.runtimePort.create({
-                    data: { port: service.hostPort, configId },
-                  });
-              }
           }
           const id = randomUUID();
           const row = await tx.runtimeOperation.create({
@@ -272,16 +259,23 @@ export class RuntimeService {
   ): Promise<ConfigServicesResponse> {
     const config = await this.prisma.configuration.findFirst({
       where: { id: configId, userId, deletedAt: null },
-      include: { deployment: { include: { revision: true } } },
+      include: {
+        deployment: { include: { revision: true } },
+        environmentValues: { select: runtimeEnvironmentSelect },
+      },
     });
     if (!config) throw new NotFoundException("Configuration not found");
     const deployment = config.deployment;
-    const services = deployment
-      ? revisionServices(deployment.revision.spec)
-      : parseCandidate(
-          JSON.stringify({ schemaVersion: 1, services: config.services }),
-          config.services as unknown as ConfigServiceInput[],
-        );
+    let services: ConfigServiceInput[];
+    try {
+      services = deployment
+        ? savedRuntimeRevision(config, deployment.revision).services
+        : runtimeRequirements(config, config.id).services;
+    } catch {
+      throw new BadRequestException(
+        "The saved configuration is unsupported or failed validation",
+      );
+    }
     return {
       configId: config.id,
       revisionId: deployment?.revisionId ?? null,

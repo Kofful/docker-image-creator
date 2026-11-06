@@ -58,8 +58,7 @@ export const COMPOSE_VALIDATION_FEEDBACK = {
     "Use only the required private stack network with its exact settings and labels.",
   STORAGE_POLICY:
     "Use only the required database named volumes with exact mounts and labels.",
-  PORT_POLICY:
-    "Publish only explicitly requested loopback ports using the required long syntax.",
+  PORT_POLICY: "Do not publish any ports; omit ports on every service.",
   ENVIRONMENT_POLICY:
     "Preserve every assigned environment binding using its exact required opaque reference; invent no secrets or references.",
   COMMAND_POLICY:

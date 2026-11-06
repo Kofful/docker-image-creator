@@ -15,6 +15,7 @@ export class ConfigArtifactCleanup {
       where: {
         id: configId,
         userId,
+        inputVersion: 2,
         deletedAt: { not: null },
         cleanupPending: true,
       },
@@ -41,6 +42,7 @@ export class ConfigArtifactCleanup {
     const configs = await this.prisma.configuration.findMany({
       where: {
         deletedAt: { not: null },
+        inputVersion: 2,
         cleanupPending: true,
         id: { gt: this.cursor },
       },

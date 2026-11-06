@@ -10,9 +10,8 @@ import type { TerminalTicket } from "../generated/prisma/client";
 import type { AuthPrincipal } from "../auth/auth.service";
 import { PrismaService } from "../database/prisma.service";
 import {
-  digest,
-  revisionServices,
-  runtimeManifest,
+  savedRuntimeRevision,
+  runtimeEnvironmentSelect,
 } from "../runtime/runtime.manifest";
 import type { RuntimeTarget } from "../runtime/runtime.driver";
 import { socketPath } from "./terminal.protocol";
@@ -99,7 +98,10 @@ export class TerminalService {
         deletedAt: null,
         deletionRequestedAt: null,
       },
-      include: { deployment: { include: { revision: true } } },
+      include: {
+        deployment: { include: { revision: true } },
+        environmentValues: { select: runtimeEnvironmentSelect },
+      },
     });
     const deployment = config?.deployment;
     if (
@@ -119,27 +121,26 @@ export class TerminalService {
       })
     )
       throw new ConflictException();
-    const services = revisionServices(deployment.revision.spec);
-    if (!services.some((item) => item.name === ticket.service))
+    let saved;
+    try {
+      saved = savedRuntimeRevision(config!, deployment.revision);
+    } catch {
+      throw new ConflictException(
+        "The saved revision failed execution validation",
+      );
+    }
+    if (!saved.services.some((item) => item.name === ticket.service))
       throw new NotFoundException();
-    const manifest = runtimeManifest(
-      ticket.userId,
-      ticket.configId,
-      ticket.revisionId,
-      services,
-    );
     if (
-      deployment.manifest !== manifest ||
-      deployment.digest !== digest(manifest) ||
-      digest(deployment.revision.compose) !== deployment.revision.digest
+      deployment.manifest !== saved.manifest ||
+      deployment.digest !== saved.digest
     )
       throw new ConflictException();
     return {
       userId: ticket.userId,
       configId: ticket.configId,
       revisionId: ticket.revisionId,
-      services,
-      manifest,
+      ...saved,
       secrets: {},
     };
   }
@@ -151,20 +152,19 @@ export class TerminalService {
         configId: ticket.configId,
         config: { userId: ticket.userId },
       },
+      include: {
+        config: {
+          include: { environmentValues: { select: runtimeEnvironmentSelect } },
+        },
+      },
     });
     if (!revision) throw new NotFoundException();
-    const services = revisionServices(revision.spec);
+    const saved = savedRuntimeRevision(revision.config, revision);
     return {
       userId: ticket.userId,
       configId: ticket.configId,
       revisionId: ticket.revisionId,
-      services,
-      manifest: runtimeManifest(
-        ticket.userId,
-        ticket.configId,
-        ticket.revisionId,
-        services,
-      ),
+      ...saved,
       secrets: {},
     };
   }

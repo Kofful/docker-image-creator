@@ -6,7 +6,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
   ConfigResponse,
   CreateConfigRequest,
@@ -101,30 +101,20 @@ export class ConfigsService {
     validateServices(input.services);
     const versioned =
       "inputVersion" in input && input.inputVersion === 2 ? input : null;
-    if (
-      !versioned &&
-      (("environmentValues" in input &&
-        input.environmentValues !== undefined) ||
-        ("environmentBindings" in input &&
-          input.environmentBindings !== undefined))
-    )
+    if (!versioned)
       throw new BadRequestException(
-        "Environment values require inputVersion 2",
+        "Only inputVersion 2 Compose generation is supported",
       );
-    if (versioned) {
-      const error = environmentInputError(versioned);
-      if (error) throw new BadRequestException(error);
-      if (!this.settings.suppliedEnvironmentEnabled)
-        throw new ServiceUnavailableException(
-          "Supplied environment generation is not available yet",
-        );
-    }
+    const error = environmentInputError(versioned);
+    if (error) throw new BadRequestException(error);
+    if (!this.settings.suppliedEnvironmentEnabled)
+      throw new ServiceUnavailableException(
+        "Compose generation is unavailable",
+      );
     const configId = randomUUID();
     const generationId = randomUUID();
     // Keyed digest prevents offline guesses of supplied passwords from DB hashes.
-    const inputDigest = versioned
-      ? this.box.fingerprint(JSON.stringify(input))
-      : createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const inputDigest = this.box.fingerprint(JSON.stringify(input));
     const result = await this.prisma.$transaction(async (tx) => {
       // Serialize admissions for this user across API instances.
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
@@ -161,15 +151,13 @@ export class ConfigsService {
         })) >= 20
       )
         throw new ConflictException("Configuration quota reached");
-      const prepared = versioned
-        ? prepareComposeInput(
-            userId,
-            configId,
-            generationId,
-            versioned,
-            this.box,
-          )
-        : null;
+      const prepared = prepareComposeInput(
+        userId,
+        configId,
+        generationId,
+        versioned,
+        this.box,
+      );
       await tx.configuration.create({
         data: {
           id: configId,
@@ -179,21 +167,21 @@ export class ConfigsService {
           name: input.name.trim(),
           description: input.description ?? "",
           services: input.services.map((service) => ({ ...service })),
-          inputVersion: versioned ? 2 : 1,
+          inputVersion: 2,
           generations: {
             create: {
               id: generationId,
-              provider: versioned ? "openrouter" : "fake",
-              model: versioned ? COMPOSE_MODEL : null,
+              provider: "openrouter",
+              model: COMPOSE_MODEL,
               inputEncrypted: this.box.seal(
-                JSON.stringify(prepared?.requirements ?? input),
+                JSON.stringify(prepared.requirements),
                 generationId,
               ),
             },
           },
         },
       });
-      for (const value of prepared?.values ?? []) {
+      for (const value of prepared.values) {
         const { bindings, ...record } = value;
         await tx.suppliedEnvironmentValue.create({ data: record });
         await tx.serviceEnvironmentBinding.createMany({ data: bindings });
@@ -234,6 +222,10 @@ export class ConfigsService {
         }
         if (config.deletedAt)
           throw new NotFoundException("Configuration not found");
+        if (config.inputVersion !== 2)
+          throw new BadRequestException(
+            "Legacy configurations are unsupported; use the previous version for cleanup",
+          );
         const pending = await tx.runtimeOperation.findFirst({
           where: { configId: id, status: { in: ["queued", "running"] } },
         });
@@ -251,6 +243,10 @@ export class ConfigsService {
           where: { configId: id },
         });
         if (deployment) {
+          if (config.inputVersion !== 2)
+            throw new BadRequestException(
+              "Legacy deployments are unsupported; use the previous version for cleanup",
+            );
           if (deployment.state !== "stopped")
             throw new ConflictException(
               "Stop the configuration before deleting it",

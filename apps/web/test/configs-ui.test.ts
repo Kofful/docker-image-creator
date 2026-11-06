@@ -17,7 +17,9 @@ const generation: GenerationResponse = {
   configId: "config-one",
   status: "succeeded",
   stage: "complete",
-  provider: "fake",
+  provider: "openrouter",
+  inputVersion: 2,
+  model: "google/gemma-4-26b-a4b-it:free",
   error: null,
   revisionId: "revision-one",
   createdAt: "2026-10-30T00:00:00.000Z",
@@ -43,9 +45,9 @@ const config: ConfigResponse = {
 describe("configuration views", () => {
   const fetchMock = vi.fn<typeof fetch>();
   let wrapper: VueWrapper | undefined;
-  let suppliedEnvironment = false;
+  let suppliedEnvironment = true;
   beforeEach(() => {
-    suppliedEnvironment = false;
+    suppliedEnvironment = true;
     vi.stubGlobal("fetch", (path: RequestInfo | URL, init?: RequestInit) =>
       path === "/api/v1/config-input-options"
         ? Promise.resolve(json({ suppliedEnvironment }))
@@ -112,6 +114,33 @@ describe("configuration views", () => {
     expect(wrapper!.text()).toContain("Compose saved");
     expect(wrapper!.get("pre").text()).toBe(config.revision!.compose);
   });
+  it("shows legacy configurations as unsupported and disables lifecycle actions", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({
+        ...config,
+        generation: {
+          ...generation,
+          provider: "fake",
+          inputVersion: undefined,
+          model: undefined,
+        },
+      }),
+    );
+    await open("/configs/config-one");
+    await flushPromises();
+    expect(wrapper!.text()).toContain("Legacy configurations are unsupported");
+    const start = wrapper!
+      .findAll("button")
+      .find((button) => button.text() === "Start")!;
+    expect(start.attributes("disabled")).toBeDefined();
+    await start.trigger("click");
+    expect(
+      fetchMock.mock.calls.some(
+        ([path]) => typeof path === "string" && path.endsWith("/start"),
+      ),
+    ).toBe(false);
+  });
+
   it("resumes polling an existing configuration without creating another job", async () => {
     let details = 0;
     // The first response is consumed by login in open().

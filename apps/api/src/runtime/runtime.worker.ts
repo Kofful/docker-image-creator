@@ -10,8 +10,7 @@ import { Prisma } from "../generated/prisma/client";
 import type { ServiceRuntimeResponse } from "@docker-image-creator/contracts";
 import { ArtifactStore } from "../configs/artifact.store";
 import { SecretBox } from "../configs/secret-box";
-import { secretNames } from "../configs/compose.compiler";
-import { digest, revisionServices, runtimeManifest } from "./runtime.manifest";
+import { savedRuntimeRevision } from "./runtime.manifest";
 import {
   RuntimeDriver,
   RuntimeFailure,
@@ -86,7 +85,11 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
     const now = new Date();
     // Lease expires after the command deadline plus grace. Never replay a stale Start.
     await this.prisma.runtimeOperation.updateMany({
-      where: { status: "running", leaseExpiresAt: { lt: now } },
+      where: {
+        status: "running",
+        leaseExpiresAt: { lt: now },
+        config: { inputVersion: 2 },
+      },
       data: {
         status: "failed",
         stage: "failed",
@@ -98,6 +101,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
     await this.prisma.runtimeOperation.updateMany({
       where: {
         status: "queued",
+        config: { inputVersion: 2 },
         createdAt: { lt: new Date(now.getTime() - this.settings.queueMs) },
       },
       data: {
@@ -111,6 +115,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
       where: {
         config: {
           deletedAt: null,
+          inputVersion: 2,
           runtimeOperations: {
             none: { status: { in: ["queued", "running"] } },
           },
@@ -210,7 +215,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
       async (tx) => {
         const rows = await tx.$queryRaw<
           { id: string }[]
-        >`SELECT id FROM runtime_operations WHERE status = 'queued' ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`;
+        >`SELECT o.id FROM runtime_operations o JOIN configurations c ON c.id = o.config_id WHERE o.status = 'queued' AND c.input_version = 2 ORDER BY o.created_at, o.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
         if (!rows[0]) return null;
         const token = randomUUID();
         const deadlineAt = new Date(Date.now() + this.settings.operationMs);
@@ -239,7 +244,19 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
       where: { id },
       include: {
         revision: true,
-        config: { include: { deployment: true, secrets: includeSecrets } },
+        config: {
+          include: {
+            deployment: true,
+            environmentValues: {
+              select: {
+                reference: true,
+                purpose: true,
+                bindings: { select: { service: true, name: true } },
+                ...(includeSecrets ? { valueEncrypted: true } : {}),
+              },
+            },
+          },
+        },
       },
     });
     if (
@@ -248,43 +265,53 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
       operation.revision.configId !== operation.configId
     )
       throw new RuntimeFailure("INVALID_REVISION");
-    const services = revisionServices(operation.revision.spec);
-    const manifest = runtimeManifest(
-      operation.userId,
-      operation.configId,
-      operation.revisionId,
-      services,
-    );
+    const saved = savedRuntimeRevision(operation.config, operation.revision);
     if (
-      operation.config.deployment?.manifest !== manifest ||
-      operation.config.deployment.digest !== digest(manifest)
+      operation.config.deployment?.revisionId !== operation.revisionId ||
+      operation.config.deployment.manifest !== saved.manifest ||
+      operation.config.deployment.digest !== saved.digest
     )
       throw new RuntimeFailure("INVALID_REVISION");
-    const secrets: Record<string, string> = {};
-    if (includeSecrets)
-      for (const service of services)
-        for (const name of secretNames(service)) {
-          const row = operation.config.secrets.find(
-            (item) => item.name === name,
-          );
-          if (!row) throw new RuntimeFailure("INVALID_REVISION");
-          const value = this.box.open(
-            row.valueEncrypted,
-            `${operation.configId}:${name}`,
-          );
-          if (!/^[A-Za-z0-9_-]{43}$/.test(value))
-            throw new RuntimeFailure("INVALID_REVISION");
-          secrets[name] = value;
-        }
+    const secrets: Record<string, string> = Object.create(null) as Record<
+      string,
+      string
+    >;
+    if (includeSecrets) {
+      for (const row of operation.config.environmentValues) {
+        if (typeof row.valueEncrypted !== "string")
+          throw new RuntimeFailure("INVALID_REVISION");
+        const value = this.box.open(
+          row.valueEncrypted,
+          `${operation.configId}:${row.reference}`,
+        );
+        // Recheck decrypted values before crossing the privileged process boundary.
+        if (
+          !value.length ||
+          Buffer.byteLength(value) > 4096 ||
+          /\0|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+            value,
+          )
+        )
+          throw new RuntimeFailure("INVALID_REVISION");
+        secrets[row.reference] = value;
+      }
+      if (
+        Object.values(secrets).reduce(
+          (sum, value) => sum + Buffer.byteLength(value),
+          0,
+        ) > 16384
+      )
+        throw new RuntimeFailure("INVALID_REVISION");
+    }
     return {
       userId: operation.userId,
       configId: operation.configId,
       revisionId: operation.revisionId,
-      services,
-      manifest,
+      ...saved,
       secrets,
     };
   }
+
   private async run(
     id: string,
     token: string,
@@ -330,6 +357,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
         abort.signal.throwIfAborted();
       } else await this.driver.stop(target, abort.signal);
       const observed = await this.driver.observe(target, abort.signal);
+      abort.signal.throwIfAborted();
       running = observed.running;
       ready = observed.ready;
       services = observed.services;
@@ -385,6 +413,7 @@ export class RuntimeWorker implements OnModuleInit, OnModuleDestroy {
           status: "running",
           leaseToken: token,
           leaseExpiresAt: { gt: new Date() },
+          ...(!errorCode ? { deadlineAt: { gt: new Date() } } : {}),
         },
         data: {
           status: errorCode ? "failed" : "succeeded",

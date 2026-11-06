@@ -37,8 +37,6 @@ services:
       timeout: 5s
       retries: 24
       start_period: 10s
-    ports:
-      [{ target: 8000, published: "18080", host_ip: 127.0.0.1, protocol: tcp }]
     depends_on:
       db: { condition: service_healthy }
       py: { condition: service_healthy }

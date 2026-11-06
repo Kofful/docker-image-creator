@@ -3,10 +3,7 @@ import { resolve } from "node:path";
 
 @Injectable()
 export class GenerationSettings {
-  // Activate only after direct generation and runner validation are integrated.
-  readonly suppliedEnvironmentEnabled = false;
-  // Queue integration is testable independently; enable together at cutover.
-  readonly directComposeGenerationEnabled = false;
+  readonly suppliedEnvironmentEnabled = true;
   readonly root = resolve(
     process.env.CONFIG_ARTIFACT_ROOT ??
       resolve(__dirname, "../../../../.runtime/configs"),
@@ -17,7 +14,6 @@ export class GenerationSettings {
   readonly queueMs = 15 * 60 * 1000;
   readonly pollMs = 1000;
   readonly maxOutputBytes = 1024 * 1024;
-  readonly fakeDelayMs: number;
 
   constructor() {
     const key = process.env.CONFIG_ENCRYPTION_KEY;
@@ -26,9 +22,5 @@ export class GenerationSettings {
         "CONFIG_ENCRYPTION_KEY must contain exactly 64 hexadecimal characters (32 decoded bytes). Generate it with: openssl rand -hex 32",
       );
     this.encryptionKey = Buffer.from(key, "hex");
-    const delay = process.env.CONFIG_FAKE_DELAY_MS ?? "0";
-    if (!/^\d+$/.test(delay) || Number(delay) > this.generationMs)
-      throw new Error("Invalid CONFIG_FAKE_DELAY_MS");
-    this.fakeDelayMs = Number(delay);
   }
 }

@@ -22,7 +22,6 @@ import { AuthOriginGuard } from "../auth/auth-origin.guard";
 import { CreateConfigDto } from "./config.dto";
 import { ConfigsService } from "./configs.service";
 import { GenerationSettings } from "./generation.settings";
-import type { CreateComposeConfigRequest } from "@docker-image-creator/contracts";
 
 @Controller()
 @UseGuards(AuthOriginGuard, AccessTokenGuard)
@@ -54,7 +53,7 @@ export class ConfigsController {
       throw new BadRequestException("Idempotency-Key must be a UUID");
     const result = await this.configs.create(
       request.principal.user.id,
-      body.inputVersion === 2 ? (body as CreateComposeConfigRequest) : body,
+      body,
       key,
     );
     response.setHeader("Location", result.statusUrl);

@@ -7,10 +7,6 @@ import { GenerationSettings } from "./generation.settings";
 import { SecretBox } from "./secret-box";
 import { ArtifactStore } from "./artifact.store";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
-import {
-  FakeGenerationProvider,
-  GenerationProvider,
-} from "./generation.provider";
 import { GenerationWorker } from "./generation.worker";
 import { ComposeGenerationProvider } from "./compose.provider";
 import { OpenRouterGenerationProvider } from "./openrouter.provider";
@@ -35,7 +31,6 @@ import { ComposeGenerator } from "./compose.generator";
           apiKey: process.env.OPENROUTER_API_KEY,
         }),
     },
-    { provide: GenerationProvider, useClass: FakeGenerationProvider },
   ],
 })
 export class ConfigsModule {}

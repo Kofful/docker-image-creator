@@ -3,7 +3,6 @@ import type { ConfigServiceInput } from "@docker-image-creator/contracts";
 
 export function validateServices(services: ConfigServiceInput[]): void {
   const names = new Set<string>();
-  const ports = new Set<number>();
   for (const service of services) {
     const database = service.image === "mysql" || service.image === "mongodb";
     if (
@@ -13,14 +12,16 @@ export function validateServices(services: ConfigServiceInput[]): void {
       (!database && service.database !== undefined) ||
       (service.language !== undefined &&
         service.language !==
-          (service.image === "node" ? "javascript" : "python")) ||
-      (service.hostPort !== undefined && ports.has(service.hostPort))
+          (service.image === "node" ? "javascript" : "python"))
     ) {
       throw new BadRequestException(
         "Service settings conflict with the catalog",
       );
     }
     names.add(service.name);
-    if (service.hostPort !== undefined) ports.add(service.hostPort);
+    if (service.hostPort !== undefined)
+      throw new BadRequestException(
+        "Published ports are unsupported on private isolated networks",
+      );
   }
 }

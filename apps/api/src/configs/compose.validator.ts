@@ -151,6 +151,7 @@ export function validateComposeRequirements(
     )
       fail("IMAGE_MISMATCH");
     for (const service of input.services) {
+      if (service.hostPort !== undefined) fail("PORT_POLICY");
       if (
         validateSync(plainToInstance(ConfigServiceDto, service), {
           whitelist: true,
@@ -307,21 +308,6 @@ export function validateCompose(
           environment[binding.name] = `\${${entry.reference}:?Required value}`;
     if (Object.keys(environment).length || def.environment !== undefined)
       equal(def.environment, environment, "ENVIRONMENT_POLICY");
-    if (service.hostPort === undefined) {
-      if (def.ports !== undefined) fail("PORT_POLICY");
-    } else
-      equal(
-        def.ports,
-        [
-          {
-            target: catalog.port,
-            published: String(service.hostPort),
-            host_ip: "127.0.0.1",
-            protocol: "tcp",
-          },
-        ],
-        "PORT_POLICY",
-      );
     const mounts =
       service.image === "mysql" || service.image === "mongodb"
         ? POLICY.databaseMounts[service.image]
@@ -363,14 +349,7 @@ export function validateCompose(
       image: service.image,
       imageReference: catalog.image,
       containerPort: catalog.port,
-      publishedPort:
-        service.hostPort === undefined
-          ? null
-          : {
-              host: "127.0.0.1" as const,
-              hostPort: service.hostPort,
-              containerPort: catalog.port,
-            },
+      publishedPort: null,
       volumes: derivedVolumes,
     };
   });
@@ -406,6 +385,19 @@ export function validateCompose(
   };
 }
 
+function canonicalEnvironment(
+  environment: ComposeGenerationRequirements["environment"],
+) {
+  return environment
+    .map((entry) => ({
+      ...entry,
+      bindings: [...entry.bindings].sort((a, b) =>
+        `${a.service}:${a.name}`.localeCompare(`${b.service}:${b.name}`),
+      ),
+    }))
+    .sort((a, b) => a.reference.localeCompare(b.reference));
+}
+
 /** Re-derive and compare metadata; a matching digest/header is insufficient. */
 export function validateSavedCompose(
   metadata: unknown,
@@ -422,7 +414,12 @@ export function validateSavedCompose(
   const artifact = validateCompose(candidate.compose, input);
   if (
     !isDeepStrictEqual(artifact.metadata.services, candidate.services) ||
-    !isDeepStrictEqual(artifact.metadata.environment, candidate.environment)
+    !isDeepStrictEqual(
+      canonicalEnvironment(artifact.metadata.environment),
+      canonicalEnvironment(
+        candidate.environment as ComposeGenerationRequirements["environment"],
+      ),
+    )
   )
     throw new ComposeRevisionFailure("INVALID_REVISION");
   return artifact;

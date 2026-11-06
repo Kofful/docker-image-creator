@@ -1,5 +1,7 @@
 # Local setup
 
+Current generation/execution uses [version 2 saved Compose](saved-compose-runtime.md), supplied environment values, and OpenRouter. Legacy deployments/jobs must be stopped/drained using the previous version before upgrading. `CONFIG_FAKE_DELAY_MS` and the procedural generator are removed. Published ports are unsupported; use private service networking and terminals. The four-image private lifecycle smoke now passes; this does not claim a live model benchmark or deployment. The following older verification records are historical.
+
 The default Compose stack includes web, API, MySQL, and the private runtime runner. Its supported-host runtime smoke gate is separate from API/database checks.
 
 ## Private runtime runner
@@ -193,7 +195,6 @@ See [configuration API](configuration-api.md) for request examples, status polli
 | `CONFIG_ENCRYPTION_KEY` | Required: 32 bytes encoded as exactly 64 hexadecimal characters; generate with `openssl rand -hex 32` | Separate AES-256-GCM key for input/output and generated database secrets; retain and back up alongside MySQL; key rotation is not implemented                                     |
 | `CONFIG_ARTIFACT_ROOT`  | Source: repository `.runtime/configs`; Docker: `/app/.runtime/configs`                                | Private artifact root; Docker persists it in the `generated-configs` named volume                                                                                                 |
 | `OPENROUTER_API_KEY`    | Optional while the adapter is inactive; required for direct provider calls                            | Server-only selected-model credential, passed only to API by Compose; source development supplies a process variable. See [adapter limits and activation](openrouter-adapter.md). |
-| `CONFIG_FAKE_DELAY_MS`  | `0`, maximum `300000`                                                                                 | Fake-provider delay; `120000` demonstrates two-minute generation without credentials or paid calls                                                                                |
 
 No private environment file was read or modified. A human operator must supply the new encryption key through deployment configuration before restarting the updated API. The `.env.example` remains secret-free. The Compose artifact contains secret placeholders, not passwords; runner secret injection is deferred with Docker execution.
 

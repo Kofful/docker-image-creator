@@ -1,35 +1,22 @@
 import "reflect-metadata";
+import { runtimeFixture } from "./runtime-fixtures";
+import { composeIdentity } from "../src/configs/compose.revision";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import {
   DockerRuntimeDriver,
   RuntimeFailure,
-  type RuntimeTarget,
 } from "../src/runtime/runtime.driver";
-import {
-  runtimeLabels,
-  runtimeManifest,
-} from "../src/runtime/runtime.manifest";
+import { runtimeLabels } from "../src/runtime/runtime.manifest";
 
 function fixture() {
   const userId = randomUUID(),
     configId = randomUUID(),
     revisionId = randomUUID();
-  const target: RuntimeTarget = {
-    userId,
-    configId,
-    revisionId,
-    services: [{ name: "web", image: "node", type: "code" }],
-    secrets: {},
-    manifest: "",
-  };
-  target.manifest = runtimeManifest(
-    userId,
-    configId,
-    revisionId,
-    target.services,
-  );
+  const target = runtimeFixture(composeIdentity(userId, configId, revisionId), [
+    { name: "web", image: "node", type: "code" },
+  ]);
   const labels = runtimeLabels(userId, configId);
   const container = {
     Id: "a".repeat(64),
@@ -165,16 +152,8 @@ test("service summaries distinguish verified absence, exited, and unhealthy runn
 test("an inspection failure is unknown, cannot prove stopped, and does not expose raw inspect fields", async () => {
   const f = fixture();
   Object.assign(f.container.Config, { Env: ["PASSWORD=private-value"] });
-  f.target.services[0]!.hostPort = 8081;
-  f.container.NetworkSettings.Ports = {
-    "8000/tcp": [{ HostIp: "127.0.0.1", HostPort: "8081" }],
-  };
   const good = await f.driver.observe(f.target, AbortSignal.timeout(1000));
-  assert.deepEqual(good.services[0]?.publishedPort, {
-    host: "127.0.0.1",
-    hostPort: 8081,
-    containerPort: 8000,
-  });
+  assert.equal(good.services[0]?.publishedPort, null);
   assert.ok(!JSON.stringify(good).includes("private-value"));
   assert.ok(!JSON.stringify(good).includes(f.container.Id));
   f.driver.failInspection = true;
@@ -321,4 +300,85 @@ test("Delete resumes after partial removal and verifies the remaining network is
   await f.driver.remove(f.target, AbortSignal.timeout(1000));
   assert.equal(f.driver.networkPresent, false);
   assert.equal(f.driver.mutations.filter((args) => args[0] === "rm").length, 1);
+});
+
+test("Start revalidates bytes, metadata, identity and references before any Docker command", async () => {
+  for (const tamper of [
+    "digest",
+    "yaml",
+    "metadata",
+    "scope",
+    "legacy",
+    "secret-key",
+    "missing-secret",
+  ] as const) {
+    const target = runtimeFixture(
+      composeIdentity(randomUUID(), randomUUID(), randomUUID()),
+      [{ name: "db", type: "database", image: "mysql" }],
+    );
+    if (tamper === "digest") target.digest = "0".repeat(64);
+    if (tamper === "yaml") target.manifest += "privileged: true\n";
+    if (tamper === "metadata") target.metadata.services[0]!.volumes = [];
+    if (tamper === "scope") target.configId = randomUUID();
+    if (tamper === "legacy")
+      Object.assign(target.metadata, { schemaVersion: 1 });
+    if (tamper === "secret-key") target.secrets.PATH = "untrusted";
+    if (tamper === "missing-secret") target.secrets = {};
+    let calls = 0;
+    class Driver extends DockerRuntimeDriver {
+      protected override async command(): Promise<string> {
+        calls++;
+        throw new Error("Docker must not be called");
+      }
+    }
+    await assert.rejects(
+      new Driver().start(target, AbortSignal.timeout(1000)),
+      (error: unknown) =>
+        error instanceof RuntimeFailure && error.code === "INVALID_REVISION",
+    );
+    assert.equal(calls, 0, tamper);
+  }
+});
+
+test("pull and up receive original authored bytes and only explicit opaque values", async () => {
+  const target = runtimeFixture(
+    composeIdentity(randomUUID(), randomUUID(), randomUUID()),
+    [{ name: "web", type: "code", image: "node" }],
+  );
+  const calls: {
+    args: string[];
+    input?: string;
+    secrets?: Record<string, string>;
+  }[] = [];
+  class Driver extends DockerRuntimeDriver {
+    protected override async command(
+      args: string[],
+      _signal: AbortSignal,
+      input?: string,
+      secrets?: Record<string, string>,
+    ): Promise<string> {
+      calls.push({ args, input, secrets });
+      if (args[0] === "info")
+        return JSON.stringify({
+          ServerVersion: "28.1.1",
+          OSType: "linux",
+          MemoryLimit: true,
+          PidsLimit: true,
+          CpuCfsQuota: true,
+        });
+      return "";
+    }
+    override async observe() {
+      return { running: true, ready: true, services: [] };
+    }
+  }
+  await new Driver().start(target, AbortSignal.timeout(1000));
+  const compose = calls.filter((call) => call.args[0] === "compose");
+  assert.equal(compose.length, 2);
+  for (const call of compose) {
+    assert.equal(call.input, target.manifest);
+    assert.deepEqual(call.secrets, target.secrets);
+    assert.ok(call.args.includes("/dev/null"));
+    assert.equal(call.args.at(call.args.indexOf("--file") + 1), "-");
+  }
 });

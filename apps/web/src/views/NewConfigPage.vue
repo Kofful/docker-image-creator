@@ -4,7 +4,6 @@ import { RouterLink, useRouter } from "vue-router";
 import type {
   CatalogImage,
   ConfigServiceInput,
-  CreateConfigRequest,
   CreateComposeConfigRequest,
   SuppliedEnvironmentValueInput,
   ServiceEnvironmentBindingInput,
@@ -30,7 +29,7 @@ onMounted(async () => {
     if (!disposed)
       suppliedEnvironment.value = options.suppliedEnvironment === true;
   } catch {
-    /* Keep the current creation flow when the capability is unavailable. */
+    /* Creation remains unavailable until the API capability is known. */
   } finally {
     optionsLoaded.value = true;
   }
@@ -51,10 +50,17 @@ let pendingInput = "";
 let pendingKey = "";
 async function submit() {
   if (busy.value || !optionsLoaded.value) return;
+  if (!suppliedEnvironment.value) {
+    error.value = "Compose generation is unavailable. Reload and try again.";
+    return;
+  }
   busy.value = true;
   error.value = "";
   try {
-    let input: CreateConfigRequest | CreateComposeConfigRequest = {
+    const input: CreateComposeConfigRequest = {
+      inputVersion: 2,
+      environmentValues: environmentValues.value,
+      environmentBindings: environmentBindings.value,
       name: name.value,
       description: description.value,
       instructions: instructions.value,
@@ -67,18 +73,10 @@ async function submit() {
         }),
       ),
     };
-    if (suppliedEnvironment.value) {
-      input = {
-        ...input,
-        inputVersion: 2,
-        environmentValues: environmentValues.value,
-        environmentBindings: environmentBindings.value,
-      };
-      const message = environmentInputError(input);
-      if (message) {
-        error.value = message;
-        return;
-      }
+    const message = environmentInputError(input);
+    if (message) {
+      error.value = message;
+      return;
     }
     const serialized = JSON.stringify(input);
     if (serialized !== pendingInput) {
@@ -127,8 +125,7 @@ async function submit() {
           maxlength="16000"
         />
         <p v-if="!suppliedEnvironment" class="field-help">
-          The development generator preserves selections and does not interpret
-          instructions.
+          Compose generation is unavailable. Reload and try again.
         </p>
         <div
           v-for="(service, index) in services"

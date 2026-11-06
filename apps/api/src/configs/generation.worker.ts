@@ -4,12 +4,8 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from "@nestjs/common";
-import { createHash, randomUUID } from "node:crypto";
-import type {
-  ComposeGenerationRequirements,
-  ComposeRevisionArtifact,
-  CreateConfigRequest,
-} from "@docker-image-creator/contracts";
+import { randomUUID } from "node:crypto";
+import type { ComposeGenerationRequirements } from "@docker-image-creator/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { Prisma } from "../generated/prisma/client";
 import { ComposeGenerator } from "./compose.generator";
@@ -24,16 +20,10 @@ import {
   type ComposeProviderResult,
 } from "./compose.provider";
 import { PrismaService } from "../database/prisma.service";
-import { GenerationProvider } from "./generation.provider";
 import { GenerationSettings } from "./generation.settings";
 import { SecretBox } from "./secret-box";
 import { ArtifactStore } from "./artifact.store";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
-import {
-  compileCompose,
-  parseCandidate,
-  secretNames,
-} from "./compose.compiler";
 
 class JobFailure extends Error {
   constructor(readonly code: string) {
@@ -55,7 +45,6 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly provider: GenerationProvider,
     private readonly settings: GenerationSettings,
     private readonly box: SecretBox,
     private readonly files: ArtifactStore,
@@ -91,6 +80,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
       await this.prisma.generationAttempt.updateMany({
         where: {
           status: "queued",
+          config: { inputVersion: 2 },
           createdAt: { lt: new Date(now.getTime() - this.settings.queueMs) },
         },
         data: {
@@ -102,7 +92,11 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
       });
       // Expired attempts are fenced and never automatically call the provider again.
       await this.prisma.generationAttempt.updateMany({
-        where: { status: "running", leaseExpiresAt: { lt: now } },
+        where: {
+          status: "running",
+          leaseExpiresAt: { lt: now },
+          config: { inputVersion: 2 },
+        },
         data: {
           status: "failed",
           stage: "failed",
@@ -115,7 +109,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
         where: {
           status: "failed",
           cleanupPending: true,
-          config: { deletedAt: null },
+          config: { deletedAt: null, inputVersion: 2 },
         },
         include: { config: true },
         take: 20,
@@ -168,7 +162,7 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
         if (!slots[0]) return null;
         const rows = await tx.$queryRaw<
           { id: string }[]
-        >`SELECT g.id FROM generation_attempts g JOIN configurations c ON c.id = g.config_id WHERE g.status = 'queued' AND c.input_version = ${this.settings.directComposeGenerationEnabled ? 2 : 1} AND c.deleted_at IS NULL ORDER BY g.created_at, g.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
+        >`SELECT g.id FROM generation_attempts g JOIN configurations c ON c.id = g.config_id WHERE g.status = 'queued' AND c.input_version = 2 AND c.deleted_at IS NULL ORDER BY g.created_at, g.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
         if (!rows[0]) return null;
         const id = rows[0].id;
         const token = randomUUID();
@@ -215,141 +209,92 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
     const owned = { id, status: "running" as const, leaseToken: token };
     try {
       abort.signal.throwIfAborted();
-      let direct: ComposeRevisionArtifact | undefined;
-      let services: CreateConfigRequest["services"] = [];
-      let compose: string;
-      if (job.config.inputVersion === 2) {
-        const input = JSON.parse(
-          this.box.open(job.inputEncrypted, id),
-        ) as ComposeGenerationRequirements;
-        validateComposeRequirements(
-          input,
-          composeIdentity(job.config.userId, job.configId, revisionId),
-        );
-        const storedValues =
-          await this.prisma.suppliedEnvironmentValue.findMany({
-            where: { configId: job.configId },
-            select: {
-              reference: true,
-              purpose: true,
-              bindings: { select: { service: true, name: true } },
+      if (job.config.inputVersion !== 2) throw new JobFailure("INVALID_INPUT");
+      const input = JSON.parse(
+        this.box.open(job.inputEncrypted, id),
+      ) as ComposeGenerationRequirements;
+      validateComposeRequirements(
+        input,
+        composeIdentity(job.config.userId, job.configId, revisionId),
+      );
+      const storedValues = await this.prisma.suppliedEnvironmentValue.findMany({
+        where: { configId: job.configId },
+        select: {
+          reference: true,
+          purpose: true,
+          bindings: { select: { service: true, name: true } },
+        },
+      });
+      const canonical = (
+        entries: ComposeGenerationRequirements["environment"],
+      ) =>
+        entries
+          .map((entry) => ({
+            reference: entry.reference,
+            purpose: entry.purpose,
+            bindings: entry.bindings
+              .map((binding) => ({
+                service: binding.service,
+                name: binding.name,
+              }))
+              .sort((a, b) =>
+                `${a.service}:${a.name}`.localeCompare(
+                  `${b.service}:${b.name}`,
+                ),
+              ),
+          }))
+          .sort((a, b) => a.reference.localeCompare(b.reference));
+      if (
+        !isDeepStrictEqual(input.services, job.config.services) ||
+        !isDeepStrictEqual(
+          canonical(input.environment),
+          canonical(storedValues),
+        )
+      )
+        throw new JobFailure("INVALID_INPUT");
+      const captured: string[] = [];
+      const metadata: Prisma.InputJsonObject[] = [];
+      const result = await this.composeGenerator.generateValidated(
+        input,
+        abort.signal,
+        (raw) => validateCompose(raw, input),
+        async (response: ComposeProviderResult) => {
+          abort.signal.throwIfAborted();
+          const oversized =
+            Buffer.byteLength(response.compose) > this.settings.maxOutputBytes;
+          captured.push(
+            Buffer.from(response.compose)
+              .subarray(0, this.settings.maxOutputBytes)
+              .toString("utf8"),
+          );
+          metadata.push({
+            provider: response.provider,
+            model: response.model,
+            reportedModel: response.reportedModel,
+            elapsedMs: response.elapsedMs,
+            httpAttempts: response.httpAttempts,
+            usage: { ...response.usage },
+          });
+          const stored = await this.prisma.generationAttempt.updateMany({
+            where: owned,
+            data: {
+              outputEncrypted: this.box.seal(
+                JSON.stringify(
+                  captured.map((raw) => Buffer.from(raw).toString("base64")),
+                ),
+                id,
+              ),
+              outputTruncated: oversized,
+              providerResponses: metadata,
+              stage: "validating",
             },
           });
-        const canonical = (
-          entries: ComposeGenerationRequirements["environment"],
-        ) =>
-          entries
-            .map((entry) => ({
-              reference: entry.reference,
-              purpose: entry.purpose,
-              bindings: entry.bindings
-                .map((binding) => ({
-                  service: binding.service,
-                  name: binding.name,
-                }))
-                .sort((a, b) =>
-                  `${a.service}:${a.name}`.localeCompare(
-                    `${b.service}:${b.name}`,
-                  ),
-                ),
-            }))
-            .sort((a, b) => a.reference.localeCompare(b.reference));
-        if (
-          !isDeepStrictEqual(input.services, job.config.services) ||
-          !isDeepStrictEqual(
-            canonical(input.environment),
-            canonical(storedValues),
-          )
-        )
-          throw new JobFailure("INVALID_INPUT");
-        const captured: string[] = [];
-        const metadata: Prisma.InputJsonObject[] = [];
-        const result = await this.composeGenerator.generateValidated(
-          input,
-          abort.signal,
-          (raw) => validateCompose(raw, input),
-          async (response: ComposeProviderResult) => {
-            abort.signal.throwIfAborted();
-            const oversized =
-              Buffer.byteLength(response.compose) >
-              this.settings.maxOutputBytes;
-            captured.push(
-              Buffer.from(response.compose)
-                .subarray(0, this.settings.maxOutputBytes)
-                .toString("utf8"),
-            );
-            metadata.push({
-              provider: response.provider,
-              model: response.model,
-              reportedModel: response.reportedModel,
-              elapsedMs: response.elapsedMs,
-              httpAttempts: response.httpAttempts,
-              usage: { ...response.usage },
-            });
-            const stored = await this.prisma.generationAttempt.updateMany({
-              where: owned,
-              data: {
-                outputEncrypted: this.box.seal(
-                  JSON.stringify(
-                    captured.map((raw) => Buffer.from(raw).toString("base64")),
-                  ),
-                  id,
-                ),
-                outputTruncated: oversized,
-                providerResponses: metadata,
-                stage: "validating",
-              },
-            });
-            if (!stored.count) throw new JobFailure("INTERRUPTED");
-            if (oversized) throw new JobFailure("OUTPUT_TOO_LARGE");
-          },
-        );
-        direct = result.value;
-        compose = direct.compose;
-      } else {
-        const input = JSON.parse(
-          this.box.open(job.inputEncrypted, id),
-        ) as CreateConfigRequest;
-        const interrupted = new Promise<never>((_resolve, reject) => {
-          if (abort.signal.aborted) reject(abort.signal.reason);
-          else
-            abort.signal.addEventListener(
-              "abort",
-              () => reject(abort.signal.reason),
-              { once: true },
-            );
-        });
-        const raw = await Promise.race([
-          this.provider.generate(
-            { services: input.services, instructions: input.instructions },
-            abort.signal,
-          ),
-          interrupted,
-        ]);
-        abort.signal.throwIfAborted();
-        const oversized =
-          Buffer.byteLength(raw, "utf8") > this.settings.maxOutputBytes;
-        const bounded = Buffer.from(raw)
-          .subarray(0, this.settings.maxOutputBytes)
-          .toString("utf8");
-        const stored = await this.prisma.generationAttempt.updateMany({
-          where: owned,
-          data: {
-            outputEncrypted: this.box.seal(bounded, id),
-            outputTruncated: oversized,
-            stage: "validating",
-          },
-        });
-        if (!stored.count) return;
-        if (oversized) throw new JobFailure("OUTPUT_TOO_LARGE");
-
-        try {
-          services = parseCandidate(raw, input.services);
-        } catch {
-          throw new JobFailure("INVALID_OUTPUT");
-        }
-        compose = compileCompose(job.configId, revisionId, services);
-      }
+          if (!stored.count) throw new JobFailure("INTERRUPTED");
+          if (oversized) throw new JobFailure("OUTPUT_TOO_LARGE");
+        },
+      );
+      const direct = result.value;
+      const compose = direct.compose;
       stage = "writing";
       await this.prisma.generationAttempt.updateMany({
         where: owned,
@@ -390,36 +335,14 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
             configId: job.configId,
             generationId: id,
             version: 1,
-            spec: direct
-              ? (JSON.parse(
-                  JSON.stringify(direct.metadata),
-                ) as Prisma.InputJsonValue)
-              : {
-                  schemaVersion: 1,
-                  catalogVersion: 1,
-                  services: services.map((service) => ({ ...service })),
-                },
+            spec: JSON.parse(
+              JSON.stringify(direct.metadata),
+            ) as Prisma.InputJsonValue,
             compose,
-            digest:
-              direct?.digest ??
-              createHash("sha256").update(compose).digest("hex"),
+            digest: direct.digest,
             artifactPath,
           },
         });
-        for (const service of services)
-          for (const name of secretNames(service)) {
-            await tx.configSecret.create({
-              data: {
-                id: randomUUID(),
-                configId: job.configId,
-                name,
-                valueEncrypted: this.box.seal(
-                  this.box.password(),
-                  `${job.configId}:${name}`,
-                ),
-              },
-            });
-          }
       });
       wroteFile = false; // The committed revision now owns the file.
     } catch (error) {

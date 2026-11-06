@@ -29,7 +29,7 @@ export const allRequirements: ComposeGenerationRequirements = {
   inputVersion: 2,
   identity,
   services: [
-    { name: "web", type: "web-server", image: "node", hostPort: 18080 },
+    { name: "web", type: "web-server", image: "node" },
     { name: "py", type: "code", image: "python" },
     { name: "db", type: "database", image: "mysql", database: "app" },
     { name: "mongo", type: "database", image: "mongodb" },

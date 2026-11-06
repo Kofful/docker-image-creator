@@ -51,6 +51,7 @@ export interface ConfigServiceInput {
   type: "code" | "web-server" | "database";
   image: CatalogImage;
   language?: "javascript" | "python";
+  /** Historical field only. New creation rejects published ports. */
   hostPort?: number;
   database?: string;
 }

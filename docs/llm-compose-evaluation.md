@@ -47,7 +47,7 @@ Do not create database tables, generation/configuration/deployment records, or d
 
 ## Reusable implementation and gaps
 
-`apps/api/scripts/test-runtime.mjs` already creates disposable identities, checks ownership labels, and removes verified test resources, including volumes. It currently evaluates two fixed compiler-generated targets rather than model output and has no ten-case reporting or cancellation cleanup. The production driver waits for all services to be running/healthy, with a 120-second Compose readiness bound and a separate image-pull deadline. Its current guarantees assume a compiler-authored manifest; raw model YAML must not be sent to that execution seam before the new strict validator is implemented.
+`apps/api/scripts/test-runtime.mjs` uses frozen authored fixtures to verify the strict validator and exact execution driver in two disposable projects. It is a lifecycle smoke, not the ten-case model evaluator or a model-quality result. The production driver waits for all services to run healthy, with a 120-second Compose readiness bound and a separate image-pull deadline. Step 5 added strict saved-document validation at the execution seam and opaque supplied-value injection; step 6 can reuse it without a database.
 
 Evaluation must share the accepted generation/validation/execution code and policy rather than implement a more permissive alternate path. It uses a test-only in-memory orchestration/runner entry point rather than the database-backed product job queue. The benchmark is separate from the still-planned product feature that would automatically validate every generated configuration through a temporary deployment.
 

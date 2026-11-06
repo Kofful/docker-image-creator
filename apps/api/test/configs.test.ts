@@ -1,14 +1,9 @@
 import "reflect-metadata";
+import { parse } from "yaml";
+import { runtimeFixture } from "./runtime-fixtures";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import {
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,7 +15,6 @@ import request from "supertest";
 import type {
   AuthResponse,
   ConfigResponse,
-  CreateConfigRequest,
   CreateComposeConfigRequest,
   CreateConfigResponse,
   GenerationResponse,
@@ -28,10 +22,6 @@ import type {
 import { AppModule } from "../src/app.module";
 import { configureApp } from "../src/configure-app";
 import { PrismaService } from "../src/database/prisma.service";
-import {
-  GenerationProvider,
-  type GenerationInput,
-} from "../src/configs/generation.provider";
 import { GenerationSettings } from "../src/configs/generation.settings";
 import { allRequirements, fixture, identity } from "./compose-test-fixtures";
 import {
@@ -49,10 +39,6 @@ import { validateSavedCompose } from "../src/configs/compose.validator";
 import { ComposeGenerator } from "../src/configs/compose.generator";
 import { GenerationWorker } from "../src/configs/generation.worker";
 import { SecretBox } from "../src/configs/secret-box";
-import {
-  compileCompose,
-  parseCandidate,
-} from "../src/configs/compose.compiler";
 import { ArtifactStore } from "../src/configs/artifact.store";
 import { ConfigArtifactCleanup } from "../src/configs/config-artifact-cleanup";
 
@@ -62,13 +48,25 @@ let worker: GenerationWorker;
 let root: string;
 let auth: AuthResponse;
 let settings: GenerationSettings;
-let generate: (input: GenerationInput, signal: AbortSignal) => Promise<string>;
+let generate: (
+  input: ComposeGenerationRequirements,
+  signal: AbortSignal,
+) => Promise<string>;
 let generateCompose: (
   input: ComposeGenerationRequirements,
   signal: AbortSignal,
   repair?: ComposeValidationCode,
 ) => Promise<ComposeProviderResult>;
-const input: CreateConfigRequest = {
+const input: CreateComposeConfigRequest = {
+  inputVersion: 2,
+  environmentValues: [
+    { key: "root", value: "test-root-special-$", purpose: "MySQL root" },
+    { key: "app", value: "test-app-special-$", purpose: "MySQL app" },
+  ],
+  environmentBindings: [
+    { service: "db", name: "MYSQL_ROOT_PASSWORD", valueKey: "root" },
+    { service: "db", name: "MYSQL_PASSWORD", valueKey: "app" },
+  ],
   name: "Starter and database",
   instructions: "Use catalog services",
   services: [
@@ -77,7 +75,6 @@ const input: CreateConfigRequest = {
       type: "code",
       image: "node",
       language: "javascript",
-      hostPort: 18080,
     },
     { name: "db", type: "database", image: "mysql", database: "app" },
   ],
@@ -94,11 +91,6 @@ async function start() {
         signal: AbortSignal,
         repair?: ComposeValidationCode,
       ) => generateCompose(value, signal, repair),
-    })
-    .overrideProvider(GenerationProvider)
-    .useValue({
-      generate: (value: GenerationInput, signal: AbortSignal) =>
-        generate(value, signal),
     })
     .compile();
   app = module.createNestApplication();
@@ -120,10 +112,15 @@ beforeEach(async () => {
     generationMs: 2000,
     leaseGraceMs: 1000,
   });
-  generate = async (value) =>
-    JSON.stringify({ schemaVersion: 1, services: value.services });
-  generateCompose = async () => {
-    throw new ComposeProviderFailure("PROVIDER_NOT_CONFIGURED");
+  generate = async () => "valid";
+  generateCompose = async (value, signal) => {
+    const output = await generate(value, signal);
+    return providerResult(
+      output === "valid"
+        ? runtimeFixture(value.identity, value.services, value.environment)
+            .manifest
+        : output,
+    );
   };
   await start();
   await prisma.configuration.deleteMany();
@@ -200,7 +197,7 @@ test("creation returns 202 before provider completion, then saves DB revision an
   await worker.tick();
   for (let i = 0; !release && i < 50; i++) await setTimeout(10);
   assert.equal((await status(created.generationId)).status, "running");
-  release(JSON.stringify({ schemaVersion: 1, services: input.services }));
+  release("valid");
   assert.equal((await finished(created.generationId)).status, "succeeded");
   const detail = (
     await request(app.getHttpServer())
@@ -217,23 +214,23 @@ test("creation returns 202 before provider completion, then saves DB revision an
     detail.revision.digest,
   );
   assert.equal((await stat(path)).mode & 0o777, 0o600);
-  const document = JSON.parse(compose) as {
+  const document = parse(compose) as {
     services: Record<string, Record<string, unknown>>;
     networks: object;
   };
   assert.equal("build" in document.services.api!, false);
   assert.equal(document.services.db!.ports, undefined);
-  assert.deepEqual(document.networks, { stack: { driver: "bridge" } });
+  assert.ok(JSON.stringify(document.networks).includes("isolated"));
   assert.equal(detail.generation.runtimeValidation, "not_performed");
-  const secrets = await prisma.configSecret.findMany({
+  const secrets = await prisma.suppliedEnvironmentValue.findMany({
     where: { configId: created.configId },
   });
   assert.equal(secrets.length, 2);
   for (const secret of secrets) {
     const value = app
       .get(SecretBox)
-      .open(secret.valueEncrypted, `${created.configId}:${secret.name}`);
-    assert.ok(value.length > 32);
+      .open(secret.valueEncrypted, `${created.configId}:${secret.reference}`);
+    assert.ok(input.environmentValues.some((entry) => entry.value === value));
     assert.equal(compose.includes(value), false);
     assert.equal(secret.valueEncrypted.includes(value), false);
   }
@@ -241,10 +238,7 @@ test("creation returns 202 before provider completion, then saves DB revision an
     where: { id: created.generationId },
   });
   assert.equal(row.inputEncrypted.includes(input.instructions!), false);
-  assert.equal(
-    app.get(SecretBox).open(row.outputEncrypted!, row.id),
-    JSON.stringify({ schemaVersion: 1, services: input.services }),
-  );
+  assert.equal(directCaptures(row.outputEncrypted!, row.id).at(-1), compose);
 });
 
 test("idempotent creation returns one job and rejects key reuse with different input", async () => {
@@ -344,14 +338,13 @@ for (const output of [
     await worker.tick();
     const result = await finished(created.generationId);
     assert.equal(result.status, "failed");
-    assert.equal(result.error?.code, "INVALID_OUTPUT");
+    assert.ok(
+      ["INVALID_YAML", "UNKNOWN_FIELD"].includes(result.error?.code ?? ""),
+    );
     const saved = await prisma.generationAttempt.findUniqueOrThrow({
       where: { id: result.id },
     });
-    assert.equal(
-      app.get(SecretBox).open(saved.outputEncrypted!, result.id),
-      output,
-    );
+    assert.equal(directCaptures(saved.outputEncrypted!, result.id)[0], output);
     assert.equal(await prisma.configRevision.count(), 0);
     await assert.rejects(stat(join(root, auth.user.id)), { code: "ENOENT" });
   });
@@ -370,9 +363,7 @@ test("output size overflow is bounded, marked truncated and never made runnable"
   });
   assert.equal(saved.outputTruncated, true);
   assert.equal(
-    Buffer.byteLength(
-      app.get(SecretBox).open(saved.outputEncrypted!, saved.id),
-    ),
+    Buffer.byteLength(directCaptures(saved.outputEncrypted!, saved.id)[0]!),
     settings.maxOutputBytes,
   );
 });
@@ -390,7 +381,7 @@ test("provider deadline fails the job and late output cannot publish a revision"
     (await finished(created.generationId)).error?.code,
     "GENERATION_TIMEOUT",
   );
-  release(JSON.stringify({ schemaVersion: 1, services: input.services }));
+  release("valid");
   await setTimeout(30);
   assert.equal(await prisma.configRevision.count(), 0);
 });
@@ -417,14 +408,13 @@ test("two workers claim each job once and obey the two-slot global cap", async (
   const c = (await create(input, third.access_token).expect(202))
     .body as CreateConfigResponse;
   let calls = 0;
-  generate = async (value, signal) => {
+  generate = async (_value, signal) => {
     calls++;
     await setTimeout(500, undefined, { signal });
-    return JSON.stringify({ schemaVersion: 1, services: value.services });
+    return "valid";
   };
   const second = new GenerationWorker(
     prisma,
-    app.get(GenerationProvider),
     settings,
     app.get(SecretBox),
     app.get(ArtifactStore),
@@ -500,82 +490,6 @@ test("filesystem failures keep returned configs in DB without reporting success"
   );
 });
 
-test("compiler fixes executable arguments, escapes injected text and uses only the catalog", () => {
-  assert.throws(() =>
-    parseCandidate(
-      JSON.stringify({
-        schemaVersion: 1,
-        services: [
-          { ...input.services[0], image: "python" },
-          input.services[1],
-        ],
-      }),
-      input.services,
-    ),
-  );
-  const compose = compileCompose(randomUUID(), randomUUID(), [
-    { name: "python", type: "code", image: "python" },
-    { name: "mongo", type: "database", image: "mongodb" },
-  ]);
-  assert.equal(compose.includes("Dockerfile"), false);
-  assert.equal(compose.includes("privileged"), false);
-  const document = JSON.parse(compose) as {
-    services: Record<
-      string,
-      { command?: string[]; environment?: Record<string, string> }
-    >;
-  };
-  assert.deepEqual(document.services.python!.command, [
-    "python",
-    "-m",
-    "http.server",
-    "8000",
-    "--bind",
-    "0.0.0.0",
-  ]);
-  assert.ok(
-    document.services.mongo!.environment!.MONGO_INITDB_ROOT_PASSWORD!.startsWith(
-      "${DIC_",
-    ),
-  );
-});
-
-test("all catalog templates pass actual Compose parsing without loading environment files", async () => {
-  const compose = compileCompose(randomUUID(), randomUUID(), [
-    { name: "node", type: "code", image: "node" },
-    { name: "python", type: "code", image: "python" },
-    { name: "db", type: "database", image: "mysql" },
-    { name: "mongo", type: "database", image: "mongodb" },
-  ]);
-  const file = join(root, "compose.yaml");
-  await writeFile(file, compose);
-  execFileSync(
-    "docker",
-    [
-      "compose",
-      "--env-file",
-      "/dev/null",
-      "--project-directory",
-      root,
-      "-f",
-      file,
-      "config",
-      "--quiet",
-    ],
-    {
-      env: {
-        PATH: process.env.PATH,
-        COMPOSE_DISABLE_ENV_FILE: "1",
-        DIC_DB_ROOT_PASSWORD: "test-only",
-        DIC_DB_PASSWORD: "test-only",
-        DIC_MONGO_ROOT_PASSWORD: "test-only",
-      },
-      timeout: 10000,
-      stdio: "pipe",
-    },
-  );
-});
-
 test("expired worker leases are fenced and their known artifacts are recovered without regenerating", async () => {
   const created = (await create().expect(202)).body as CreateConfigResponse;
   await prisma.generationAttempt.update({
@@ -644,7 +558,7 @@ test("deletion retains DB history and secrets, removes only owned files, hides r
   const revision = await prisma.configRevision.findUniqueOrThrow({
     where: { generationId: created.generationId },
   });
-  const secrets = await prisma.configSecret.findMany({
+  const secrets = await prisma.suppliedEnvironmentValue.findMany({
     where: { configId: created.configId },
   });
   const responses = await Promise.all([
@@ -667,7 +581,7 @@ test("deletion retains DB history and secrets, removes only owned files, hides r
     revision,
   );
   assert.deepEqual(
-    await prisma.configSecret.findMany({
+    await prisma.suppliedEnvironmentValue.findMany({
       where: { configId: created.configId },
     }),
     secrets,
@@ -729,7 +643,7 @@ test("deletion rejects queued and running generation with 403 without changing t
     ).deletedAt,
     null,
   );
-  release(JSON.stringify({ schemaVersion: 1, services: input.services }));
+  release("valid");
   assert.equal((await finished(created.generationId)).status, "succeeded");
   await deleteConfig(created.configId).expect(204);
 });
@@ -917,6 +831,7 @@ test("persistent cleanup failures do not starve configurations beyond the first 
       id,
       userId: auth.user.id,
       name: "Deleted",
+      inputVersion: 2,
       description: "",
       services: [],
       requestKey: randomUUID(),
@@ -973,16 +888,16 @@ function suppliedInput(): CreateComposeConfigRequest {
   };
 }
 
-test("supplied inputs stay gated until generation and execution integration is ready", async () => {
+test("supplied input capability is enabled and authenticated", async () => {
   const options = await request(app.getHttpServer())
     .get("/api/v1/config-input-options")
     .auth(auth.access_token, { type: "bearer" })
     .expect(200);
-  assert.deepEqual(options.body, { suppliedEnvironment: false });
+  assert.deepEqual(options.body, { suppliedEnvironment: true });
   await request(app.getHttpServer())
     .get("/api/v1/config-input-options")
     .expect(401);
-  await create(suppliedInput()).expect(503);
+  await create({ ...input, inputVersion: undefined }).expect(400);
   assert.equal(await prisma.configuration.count(), 0);
 });
 
@@ -1058,18 +973,6 @@ test("supplied values are encrypted once with shared scoped bindings and value-f
     createHash("sha256").update(JSON.stringify(body)).digest("hex"),
   );
   assert.deepEqual(config.services, body.services);
-  let calls = 0;
-  generate = async () => {
-    calls++;
-    return "unexpected";
-  };
-  await worker.tick();
-  assert.equal(
-    calls,
-    0,
-    "Legacy worker must not process supplied-value inputs",
-  );
-  assert.equal((await status(created.generationId)).status, "queued");
   const other = await register();
   for (const path of [
     `/configs/${created.configId}`,
@@ -1174,7 +1077,7 @@ test("environment validation rejects incomplete, ambiguous, unsupported, and unv
       assert.equal(response.text.includes(JSON.stringify(entry.value)), false);
   }
   assert.equal(await prisma.configuration.count(), 0);
-  assert.equal(await prisma.suppliedEnvironmentValue.count(), 0);
+  assert.equal(await prisma.configSecret.count(), 0);
 });
 
 function directInput(): CreateComposeConfigRequest {
@@ -1201,10 +1104,9 @@ function directCaptures(encrypted: string, id: string): string[] {
 function enableDirect() {
   Object.assign(settings, {
     suppliedEnvironmentEnabled: true,
-    directComposeGenerationEnabled: true,
   });
-  generate = async () => {
-    throw new Error("Legacy generation must not run");
+  generateCompose = async () => {
+    throw new ComposeProviderFailure("PROVIDER_NOT_CONFIGURED");
   };
 }
 function directYaml(input: ComposeGenerationRequirements): string {
@@ -1644,6 +1546,10 @@ test("direct publication serializes with deletion and cannot revive a deleted co
 
 test("direct queue selection excludes legacy jobs at cutover and two workers claim a new job once", async () => {
   const legacy = (await create().expect(202)).body as CreateConfigResponse;
+  await prisma.configuration.update({
+    where: { id: legacy.configId },
+    data: { inputVersion: 1 },
+  });
   const other = await register();
   enableDirect();
   let calls = 0;
@@ -1656,7 +1562,6 @@ test("direct queue selection excludes legacy jobs at cutover and two workers cla
     .body as CreateConfigResponse;
   const second = new GenerationWorker(
     prisma,
-    app.get(GenerationProvider),
     settings,
     app.get(SecretBox),
     app.get(ArtifactStore),

@@ -3,7 +3,7 @@ import type {
   ContainerState,
   ServiceRuntimeResponse,
 } from "@docker-image-creator/contracts";
-import { CATALOG } from "../configs/compose.compiler";
+import { CATALOG } from "../configs/image.catalog";
 
 export const containerStates = new Set<ContainerState>([
   "not_created",
@@ -59,29 +59,12 @@ export function serviceObservations(
       )
     )
       return fallback;
-    let publishedPort: ServiceRuntimeResponse["publishedPort"] = null;
-    if (row.publishedPort !== null) {
-      const port = row.publishedPort as Record<string, unknown> | undefined;
-      if (
-        !port ||
-        port.host !== "127.0.0.1" ||
-        port.hostPort !== service.hostPort ||
-        !Number.isInteger(port.hostPort) ||
-        port.containerPort !== CATALOG[service.image].port ||
-        !["running", "paused", "restarting"].includes(row.state as string)
-      )
-        return fallback;
-      publishedPort = {
-        host: "127.0.0.1",
-        hostPort: port.hostPort as number,
-        containerPort: CATALOG[service.image].port,
-      };
-    }
+    if (row.publishedPort !== null) return fallback;
     return {
       ...fallback,
       state: row.state as ContainerState,
       health: row.health as ServiceRuntimeResponse["health"],
-      publishedPort,
+      publishedPort: null,
       observedAt: row.observedAt,
     };
   });

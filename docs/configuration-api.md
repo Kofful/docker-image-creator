@@ -1,8 +1,6 @@
 # Configuration API
 
-Implemented: owned MySQL configurations, immutable initial revisions, durable generation attempts, encrypted inputs/output and generated database secrets, private Compose artifacts, asynchronous status polling, a soft-deletion endpoint with durable artifact cleanup, and Vue creation/list/detail views. This milestone uses a deterministic development provider, not a live LLM. It does not start Docker workloads or claim that generated images have passed runtime validation. Vue list and detail pages include confirmed deletion.
-
-The gated [version 2 generation path](compose-validation.md) now validates and saves exact model-authored Compose with encrypted supplied bindings and actual provider/model status. It remains disabled until runner integration; the active production path below still uses version 1.
+Implemented: owned MySQL configurations, immutable model-authored Compose revisions, durable OpenRouter generation, encrypted supplied values and response captures, private artifacts, polling, scoped deletion, and Vue creation/list/detail views. Generation uses exactly `google/gemma-4-26b-a4b-it:free`, with one validation repair and no procedural fallback. It does not start Docker or claim readiness. [Version 2 validation](compose-validation.md) and [saved execution](saved-compose-runtime.md) are integrated; legacy creation/execution is unsupported.
 
 All routes use `/api/v1`, bearer access tokens, origin checks, and `Cache-Control: no-store`. Unauthorized access returns 401; another user's configuration or generation returns 404. Sessions are rechecked on each poll. Shared types are in `packages/contracts/src/index.ts`.
 
@@ -10,7 +8,7 @@ The later [runtime API](runtime-api.md) adds explicit Start/Stop and operation/d
 
 ## Supplied environment input foundation
 
-Step 2 adds a gated version 2 creation contract with supplied values and shared service bindings. Authenticated `GET /api/v1/config-input-options` currently returns `{ "suppliedEnvironment": false }`; valid version 2 creation returns 503 without persistence until direct generation and execution are integrated. Integration tests override this internal gate to exercise the transaction. The current form continues using version 1 while the capability is false. See [request fields, encryption, limits, and verification](supplied-environment.md). The version 1 contract below remains active. Never put credentials in instructions or purposes.
+Authenticated `GET /api/v1/config-input-options` returns `{ "suppliedEnvironment": true }`. Version 2 is required, including both environment arrays. See [request fields, encryption, limits and sharing](supplied-environment.md). Never put credentials in instructions or purposes.
 
 ## Submit once, then poll
 
@@ -18,6 +16,23 @@ Step 2 adds a gated version 2 creation contract with supplied values and shared 
 
 ```json
 {
+  "inputVersion": 2,
+  "environmentValues": [
+    {
+      "key": "root",
+      "value": "disposable-root-example",
+      "purpose": "MySQL root"
+    },
+    {
+      "key": "app",
+      "value": "disposable-app-example",
+      "purpose": "MySQL app password"
+    }
+  ],
+  "environmentBindings": [
+    { "service": "db", "name": "MYSQL_ROOT_PASSWORD", "valueKey": "root" },
+    { "service": "db", "name": "MYSQL_PASSWORD", "valueKey": "app" }
+  ],
   "name": "Python and MySQL",
   "description": "My development environment",
   "instructions": "Use these selected services",
@@ -26,15 +41,14 @@ Step 2 adds a gated version 2 creation contract with supplied values and shared 
       "name": "api",
       "type": "code",
       "image": "python",
-      "language": "python",
-      "hostPort": 18080
+      "language": "python"
     },
     { "name": "db", "type": "database", "image": "mysql", "database": "app" }
   ]
 }
 ```
 
-Names are 1–80 characters, descriptions at most 500, and optional instructions at most 16,000. Do not submit credentials or passwords. There must be 1–4 services with unique names matching `[a-z][a-z0-9-]{0,29}`. Unknown fields are rejected, including arbitrary commands, images, mounts, builds, and environment values. Service `type` is `code`, `web-server`, or `database`; the first two use `node` or `python`, and databases use `mysql` or `mongodb`. Optional language must match the runtime. Optional host ports are unique integers from 1024–65535 and bind only to loopback; databases are private unless explicitly published. Database names match `[a-z][a-z0-9_]{0,31}` and default to `app`.
+Names are 1–80 characters, descriptions at most 500, and optional instructions at most 16,000. Submit private values only through `environmentValues`, never prose. There must be 1–4 services with unique names matching `[a-z][a-z0-9-]{0,29}`. Unknown fields are rejected, including arbitrary commands, images, mounts and builds. Service `type` is `code`, `web-server`, or `database`; the first two use `node` or `python`, and databases use `mysql` or `mongodb`. Optional language must match the runtime. Published ports are unsupported: `hostPort` is rejected with 400. All services communicate only over the private stack network. Database names match `[a-z][a-z0-9_]{0,31}` and default to `app`.
 
 Send a UUID `Idempotency-Key` header. Reusing it with identical input returns the original job, including after completion; reusing it with changed input returns 409. Reusing a deleted configuration's key returns 400, even with identical input; use a new key to create another configuration. Omitting it creates a new server key. A user can have one queued/running attempt and at most 20 configurations that have not been deleted. Admission and deletion lock the user row transactionally, including concurrent submissions.
 
@@ -50,7 +64,7 @@ The endpoint saves configuration and job records in one transaction and returns 
 }
 ```
 
-The response also includes `Location` and `Retry-After: 2`. A replay may return the job's later status. Poll `GET /api/v1/generations/:id` every two seconds until `status` is `succeeded` or `failed`. States are `queued → running → succeeded/failed`; stages include `queued`, `generating`, `validating`, `writing`, `complete`, and `failed`. Responses include a redacted error code/message, timestamps, revision ID, `provider: "fake"`, `runtimeValidation: "not_performed"`, and `cleanupPending`.
+The response also includes `Location` and `Retry-After: 2`. A replay may return the job's later status. Poll `GET /api/v1/generations/:id` every two seconds until `status` is `succeeded` or `failed`. States are `queued → running → succeeded/failed`; stages include `queued`, `generating`, `validating`, `writing`, `complete`, and `failed`. Responses include a redacted error code/message, timestamps, revision ID, `provider: "openrouter"`, the selected model and `inputVersion: 2`, `runtimeValidation: "not_performed"`, and `cleanupPending`.
 
 `GET /api/v1/configs/:id` returns name, description, safe service inputs, generation status, and the successful revision's Compose, SHA-256 digest, and relative artifact path. It never returns raw instructions, provider output, ciphertext, or passwords. `GET /api/v1/configs` lists the user's latest configurations (maximum 20), allowing recovery after navigation or a lost creation response. Deleted configurations are excluded. Revision/edit/export and explicit revalidation APIs remain planned.
 
@@ -78,9 +92,9 @@ The [runtime UI follow-up](runtime-api.md#configuration-detail-ui) adds Start/St
 
 Migration `20261030010000_configs` creates `configurations`, `generation_attempts`, `config_revisions`, `config_secrets`, and `generation_slots`. Migration `20261101000000_config_deletion` adds deletion timestamps, durable artifact-cleanup markers, and indexes. The slots table contains two durable slots; `FOR UPDATE SKIP LOCKED` transactions prevent multiple workers claiming a job or exceeding two active generations across API processes sharing the database. The current deployment still assumes one host and a shared artifact root.
 
-The API polls the durable queue every second. Generation has a five-minute deadline, followed by a 30-second lease grace period; queued jobs expire after 15 minutes. Input and returned output use AES-256-GCM with record-bound authenticated context. Every returned response is retained before policy validation. Responses over 1 MiB fail with a marked, bounded captured portion. The current fake preserves selected services and does not interpret prose; a future live adapter must enforce streaming bounds and cancellation too. No automatic model repair occurs.
+The API polls the durable queue every second. Generation has a five-minute deadline, followed by a 30-second lease grace period; queued jobs expire after 15 minutes. Input and returned output use AES-256-GCM with record-bound authenticated context. Every returned response is retained before policy validation. Responses over 1 MiB fail with a marked, bounded captured portion. The adapter interprets instructions with metadata-only requirements and bounded HTTP/content retries. At most one policy repair fits inside the shared deadline.
 
-Only approved images and server-owned template commands/settings become Compose. The fixed Node and Python HTTP starters require no adjacent source files or Dockerfile; database services use stock images and encrypted generated passwords referenced through runner-supplied environment placeholders. No plaintext secret or auxiliary environment file is written. Exact tags are fixed in the compiler; Compose syntax checks do not establish image availability, platform support, or successful startup.
+The model authors the complete Compose document using the pinned catalog and allowlisted policy. Supplied values are encrypted separately and referenced only through opaque runner interpolation keys. No plaintext secret, Dockerfile or auxiliary environment file is written. No procedural commands/defaults are inserted; invalid output is repaired once or fails.
 
 Artifacts are saved as:
 
@@ -88,12 +102,12 @@ Artifacts are saved as:
 .runtime/configs/<userId>/<configId>/<revisionId>/compose.yaml
 ```
 
-The document uses JSON formatting, a valid YAML 1.2 subset accepted by Compose. UUID paths are server-owned, directories use mode 0700, files mode 0600, and symlink roots/parents are rejected. A temporary file is flushed and renamed before the revision and successful job state commit together. MySQL remains authoritative. Generation failure retains encrypted response data and removes uncommitted artifacts; incomplete cleanup stays visible and is retried. Queued jobs survive restarts. Expired running leases fail rather than calling the provider again, and their deterministic artifact identity allows cleanup without publishing a stale result.
+The original model-authored YAML bytes are preserved exactly. UUID paths are server-owned, directories use mode 0700, files mode 0600, and symlink roots/parents are rejected. A temporary file is flushed and renamed before the revision and successful job state commit together. MySQL remains authoritative. Generation failure retains encrypted response data and removes uncommitted artifacts; incomplete cleanup stays visible and is retried. Queued jobs survive restarts. Expired running leases fail rather than calling the provider again, and their deterministic artifact identity allows cleanup without publishing a stale result.
 
 In Docker, the `generated-configs` named volume persists `/app/.runtime/configs`; production and development images provision it for the unprivileged `node` user. This is application artifact storage, separate from future generated workload volumes. No Docker socket is mounted into the API.
 
 ## Configuration and verification
 
-Set `CONFIG_ENCRYPTION_KEY` to 32 random bytes encoded as exactly 64 hexadecimal characters through deployment configuration. Generate it with `openssl rand -hex 32` and use the full output: 32 hexadecimal characters encode only 16 bytes and are rejected. Retain the key when recreating containers, and back it up with the database. Rotation/multiple key versions are not implemented. The secret-free `.env.example` documents the variables; agents must not inspect or update private environment files. `CONFIG_ARTIFACT_ROOT` optionally sets an absolute private directory, and `CONFIG_FAKE_DELAY_MS=120000` simulates two-minute generation without credentials or paid calls.
+Set `CONFIG_ENCRYPTION_KEY` to 32 random bytes encoded as exactly 64 hexadecimal characters through deployment configuration. Generate it with `openssl rand -hex 32` and use the full output: 32 hexadecimal characters encode only 16 bytes and are rejected. Retain the key when recreating containers, and back it up with the database. Rotation/multiple key versions are not implemented. The secret-free `.env.example` documents the variables; agents must not inspect or update private environment files. `CONFIG_ARTIFACT_ROOT` optionally sets an absolute private directory. The API requires operator-supplied `OPENROUTER_API_KEY` for inference; a missing key fails explicitly.
 
 Use `pnpm test:web`, `pnpm test:api`, `pnpm typecheck`, `pnpm lint`, and `pnpm build`. The API test harness applies all committed migrations twice to disposable MySQL 8.4.11, tests HTTP/database/file behavior and ownership, and runs Compose parsing with `--env-file /dev/null` and explicit non-secret values. Deletion checks cover retained records, hidden reads, quota recovery, creation-key rejection, active-generation rejection, concurrent deletion/publication, missing files, and cleanup recovery after restart. It never starts generated workloads. Frontend tests exercise multi-minute polling, temporary transport failures, cancellation, idempotent creation retry, reopening saved jobs, and confirmed deletion from both pages, including cancellation, pending requests, active/failed generation, stale 404s, and retryable errors. Exact results and remaining prerequisites are recorded in [local setup](local-setup.md).

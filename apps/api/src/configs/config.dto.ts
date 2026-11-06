@@ -4,20 +4,17 @@ import {
   ArrayMinSize,
   IsArray,
   IsIn,
-  IsInt,
   ValidateIf,
   IsString,
   Length,
   Matches,
-  Max,
   MaxLength,
-  Min,
   ValidateNested,
 } from "class-validator";
 import type {
   CatalogImage,
   ConfigServiceInput,
-  CreateConfigRequest,
+  CreateComposeConfigRequest,
   SuppliedEnvironmentValueInput,
   ServiceEnvironmentBindingInput,
 } from "@docker-image-creator/contracts";
@@ -30,40 +27,26 @@ export class ConfigServiceDto implements ConfigServiceInput {
   @IsIn(["javascript", "python"])
   language?: ConfigServiceInput["language"];
   @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
-  @IsInt()
-  @Min(1024)
-  @Max(65535)
-  hostPort?: number;
-  @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
   @IsString()
   @Matches(/^[a-z][a-z0-9_]{0,31}$/)
   database?: string;
 }
 
-export class CreateConfigDto implements CreateConfigRequest {
-  @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
+export class CreateConfigDto implements CreateComposeConfigRequest {
   @IsIn([2])
-  inputVersion?: 2;
+  inputVersion!: 2;
 
-  @ValidateIf(
-    (object: CreateConfigDto) =>
-      object.inputVersion === 2 || object.environmentValues !== undefined,
-  )
   @IsArray()
   @ArrayMaxSize(64)
   @ValidateNested({ each: true })
   @Type(() => EnvironmentValueDto)
-  environmentValues?: EnvironmentValueDto[];
+  environmentValues!: EnvironmentValueDto[];
 
-  @ValidateIf(
-    (object: CreateConfigDto) =>
-      object.inputVersion === 2 || object.environmentBindings !== undefined,
-  )
   @IsArray()
   @ArrayMaxSize(128)
   @ValidateNested({ each: true })
   @Type(() => EnvironmentBindingDto)
-  environmentBindings?: EnvironmentBindingDto[];
+  environmentBindings!: EnvironmentBindingDto[];
   @IsString() @Length(1, 80) @Matches(/\S/) name!: string;
   @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
   @IsString()

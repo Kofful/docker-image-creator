@@ -64,11 +64,7 @@ test("accepts frozen Node and four-image documents, preserving exact bytes and d
     );
   }
   const metadata = validateCompose(all, allRequirements).metadata;
-  assert.deepEqual(metadata.services[0]!.publishedPort, {
-    host: "127.0.0.1",
-    hostPort: 18080,
-    containerPort: 8000,
-  });
+  assert.equal(metadata.services[0]!.publishedPort, null);
   assert.deepEqual(metadata.services[2]!.volumes, [
     { source: "db-data", target: "/var/lib/mysql" },
   ]);
@@ -242,7 +238,6 @@ for (const path of [
   ["services", "web", "pids_limit"],
   ["services", "web", "logging", "options", "max-file"],
   ["services", "web", "healthcheck"],
-  ["services", "web", "ports"],
   ["services", "db", "volumes"],
   ["volumes", "db-data"],
   ["services", "db", "environment", "MYSQL_PASSWORD"],
@@ -255,7 +250,6 @@ for (const path of [
 test("every nested mapping rejects unknown fields, including mount/port/health/logging/dependency", () => {
   for (const path of [
     ["services", "db", "volumes", "0", "extra"],
-    ["services", "web", "ports", "0", "extra"],
     ["services", "web", "healthcheck", "extra"],
     ["services", "web", "logging", "extra"],
     ["services", "web", "logging", "options", "extra"],
@@ -389,4 +383,10 @@ test("container PATH, DOCKER_HOST and prototype-like names stay ordinary explici
     4,
   );
   assert.equal(Object.getPrototypeOf({}), Object.prototype);
+});
+
+test("published ports are rejected even when a requested loopback mapping would otherwise match", () => {
+  const input = structuredClone(allRequirements);
+  input.services[0]!.hostPort = 18080;
+  rejected(all, input);
 });

@@ -5,9 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   ConfigServiceInput,
+  ComposeGenerationRequirements,
+  ComposeRevisionMetadata,
   ServiceRuntimeResponse,
 } from "@docker-image-creator/contracts";
-import { CATALOG } from "../configs/compose.compiler";
+import { CATALOG } from "../configs/image.catalog";
+import { validateSavedCompose } from "../configs/compose.validator";
+import { composeIdentity } from "../configs/compose.revision";
 import { runtimeLabels } from "./runtime.manifest";
 import { containerStates, unknownService } from "./runtime.observations";
 
@@ -22,6 +26,9 @@ export interface RuntimeTarget {
   revisionId: string;
   services: ConfigServiceInput[];
   manifest: string;
+  digest: string;
+  metadata: ComposeRevisionMetadata;
+  requirements: ComposeGenerationRequirements;
   secrets: Record<string, string>;
 }
 export interface RuntimeObservation {
@@ -93,12 +100,17 @@ export class DockerRuntimeDriver extends RuntimeDriver {
     ms = 15000,
   ): Promise<string> {
     signal.throwIfAborted();
+    if (
+      Object.keys(secrets).some((key) => !/^DIC_SECRET_[a-f0-9]{32}$/.test(key))
+    )
+      throw new RuntimeFailure("INVALID_REVISION");
     return new Promise((resolve, reject) => {
       const child = spawn("docker", args, {
         // No inherited tokens, Docker contexts, Compose overrides, or env-file loading.
         env: {
           PATH: "/usr/local/bin:/usr/bin:/bin",
           DOCKER_HOST: "unix:///var/run/docker.sock",
+          COMPOSE_DISABLE_ENV_FILE: "1",
           ...secrets,
         },
         stdio: ["pipe", "pipe", "pipe"],
@@ -222,38 +234,26 @@ export class DockerRuntimeDriver extends RuntimeDriver {
         const mappings = Object.values(row.NetworkSettings.Ports).flatMap(
           (value) => value ?? [],
         );
-        const expected = service.hostPort === undefined ? 0 : 1;
-        if (
-          mappings.length !== expected ||
-          (expected &&
-            !row.NetworkSettings.Ports[
-              `${CATALOG[service.image].port}/tcp`
-            ]?.some(
-              (mapping) =>
-                mapping.HostIp === "127.0.0.1" &&
-                mapping.HostPort === String(service.hostPort),
-            ))
-        )
-          throw new RuntimeFailure("RESOURCE_CONFLICT");
+        if (mappings.length) throw new RuntimeFailure("RESOURCE_CONFLICT");
       }
       names.add(service.name);
-      const database = service.image === "mysql" || service.image === "mongodb";
-      const mounts = row.Mounts;
-      const expected =
-        service.image === "mongodb"
-          ? {
-              [`${project}_${service.name}-data`]: "/data/db",
-              [`${project}_${service.name}-configdb`]: "/data/configdb",
-            }
-          : { [`${project}_${service.name}-data`]: "/var/lib/mysql" };
+      const metadata = target.metadata.services.find(
+        (entry) => entry.name === service.name,
+      );
+      if (!metadata) throw new RuntimeFailure("INVALID_REVISION");
+      const expected = new Map(
+        metadata.volumes.map((volume) => [
+          `${project}_${volume.source}`,
+          volume.target,
+        ]),
+      );
       if (
-        mounts.length !==
-          (service.image === "mongodb" ? 2 : database ? 1 : 0) ||
-        mounts.some(
+        row.Mounts.length !== expected.size ||
+        row.Mounts.some(
           (mount) =>
             mount.Type !== "volume" ||
             !mount.Name ||
-            expected[mount.Name] !== mount.Destination,
+            expected.get(mount.Name) !== mount.Destination,
         )
       )
         throw new RuntimeFailure("RESOURCE_CONFLICT");
@@ -392,14 +392,7 @@ export class DockerRuntimeDriver extends RuntimeDriver {
             health === "unhealthy"
               ? health
               : null,
-          publishedPort:
-            row.State.Running && service.hostPort !== undefined
-              ? {
-                  host: "127.0.0.1",
-                  hostPort: service.hostPort,
-                  containerPort: CATALOG[service.image].port,
-                }
-              : null,
+          publishedPort: null,
           observedAt: new Date().toISOString(),
         });
       } catch {
@@ -421,6 +414,55 @@ export class DockerRuntimeDriver extends RuntimeDriver {
     };
   }
   async start(target: RuntimeTarget, signal: AbortSignal): Promise<void> {
+    try {
+      const expected = composeIdentity(
+        target.userId,
+        target.configId,
+        target.revisionId,
+      );
+      if (
+        Object.entries(expected).some(
+          ([key, value]) =>
+            target.requirements.identity[key as keyof typeof expected] !==
+            value,
+        )
+      )
+        throw new Error();
+      validateSavedCompose(
+        target.metadata,
+        target.manifest,
+        target.digest,
+        target.requirements,
+      );
+      if (
+        JSON.stringify(target.services) !==
+        JSON.stringify(target.requirements.services)
+      )
+        throw new Error();
+      const references = target.requirements.environment
+        .map((entry) => entry.reference)
+        .sort();
+      if (
+        JSON.stringify(Object.keys(target.secrets).sort()) !==
+          JSON.stringify(references) ||
+        Object.values(target.secrets).some(
+          (value) =>
+            typeof value !== "string" ||
+            !value.length ||
+            Buffer.byteLength(value) > 4096 ||
+            /\0|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+              value,
+            ),
+        ) ||
+        Object.values(target.secrets).reduce(
+          (sum, value) => sum + Buffer.byteLength(value),
+          0,
+        ) > 16384
+      )
+        throw new Error();
+    } catch {
+      throw new RuntimeFailure("INVALID_REVISION");
+    }
     const project = this.project(target);
     const info = JSON.parse(
       await this.command(["info", "--format", "{{json .}}"], signal),
@@ -445,19 +487,11 @@ export class DockerRuntimeDriver extends RuntimeDriver {
       throw new RuntimeFailure("RESOURCE_CONFLICT");
     await this.network(target, signal);
     for (const service of target.services) {
-      if (
-        service.hostPort !== undefined &&
-        (await this.command(
-          ["ps", "--quiet", "--filter", `publish=${service.hostPort}`],
-          signal,
-        ))
-      )
-        throw new RuntimeFailure("RESOURCE_CONFLICT");
-      if (service.image !== "mysql" && service.image !== "mongodb") continue;
-      for (const suffix of service.image === "mongodb"
-        ? ["data", "configdb"]
-        : ["data"]) {
-        const name = `${project}_${service.name}-${suffix}`;
+      const metadata = target.metadata.services.find(
+        (entry) => entry.name === service.name,
+      )!;
+      for (const volume of metadata.volumes) {
+        const name = `${project}_${volume.source}`;
         const found = await this.command(
           ["volume", "ls", "--quiet", "--filter", `name=^${name}$`],
           signal,

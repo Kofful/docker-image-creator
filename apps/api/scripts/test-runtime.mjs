@@ -1,17 +1,24 @@
-/* global AbortSignal, fetch */
+/* global AbortSignal */
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { DockerRuntimeDriver } from "../dist/runtime/runtime.driver.js";
-import {
-  runtimeLabels,
-  runtimeManifest,
-} from "../dist/runtime/runtime.manifest.js";
+import { runtimeLabels } from "../dist/runtime/runtime.manifest.js";
+
+import { runtimeFixture } from "../dist-test/test/runtime-fixtures.js";
+import { composeIdentity } from "../dist/configs/compose.revision.js";
 
 // Explicit opt-in, unique IDs, approved images, no repository env/config loading.
-const driver = new DockerRuntimeDriver();
+const executed = [];
+class RecordingDriver extends DockerRuntimeDriver {
+  async command(args, signal, input, ...rest) {
+    if (args[0] === "compose") executed.push(input);
+    return super.command(args, signal, input, ...rest);
+  }
+}
+const driver = new RecordingDriver();
 const targets = [];
 const canary = createServer((socket) => socket.end("test-canary"));
 function docker(args, timeout = 15000) {
@@ -35,23 +42,24 @@ function target(services) {
   const userId = randomUUID(),
     configId = randomUUID(),
     revisionId = randomUUID();
-  const secrets = {};
-  for (const service of services)
-    if (service.image === "mysql" || service.image === "mongodb") {
-      const prefix = `DIC_${service.name.toUpperCase().replaceAll("-", "_")}`;
-      secrets[`${prefix}_ROOT_PASSWORD`] =
-        randomBytes(32).toString("base64url");
-      if (service.image === "mysql")
-        secrets[`${prefix}_PASSWORD`] = randomBytes(32).toString("base64url");
-    }
-  const row = {
-    userId,
-    configId,
-    revisionId,
+  let row = runtimeFixture(
+    composeIdentity(userId, configId, revisionId),
     services,
-    secrets,
-    manifest: runtimeManifest(userId, configId, revisionId, services),
-  };
+  );
+  if (services.some((service) => service.image === "node")) {
+    const environment = row.requirements.environment;
+    environment.push({
+      reference: `DIC_SECRET_${randomBytes(16).toString("hex")}`,
+      purpose: "Exact special characters",
+      bindings: [{ service: "web", name: "APP_MESSAGE" }],
+    });
+    environment
+      .find((entry) =>
+        entry.bindings.some((binding) => binding.name === "MYSQL_PASSWORD"),
+      )
+      ?.bindings.push({ service: "web", name: "APP_PASSWORD" });
+    row = runtimeFixture(row.requirements.identity, services, environment);
+  }
   targets.push(row);
   return row;
 }
@@ -95,34 +103,130 @@ try {
     );
   await new Promise((resolve) => canary.listen(0, "0.0.0.0", resolve));
   const canaryPort = canary.address().port;
-  const probe = createServer();
-  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const hostPort = probe.address().port;
-  await new Promise((resolve) => probe.close(resolve));
   const first = target([
-    { name: "web", image: "node", type: "code", hostPort },
+    { name: "web", image: "node", type: "code" },
     { name: "db", image: "mysql", type: "database" },
   ]);
   const second = target([
     { name: "web", image: "python", type: "code" },
     { name: "db", image: "mongodb", type: "database" },
   ]);
-  for (const row of targets)
-    await driver.start(row, AbortSignal.timeout(8 * 60000));
+  for (const row of targets) {
+    console.log(
+      `Starting ${row.services.map((service) => service.image).join("/")} fixture`,
+    );
+    try {
+      await driver.start(row, AbortSignal.timeout(8 * 60000));
+      console.log("Fixture ready");
+    } catch (error) {
+      const observed = await driver
+        .observe(row, AbortSignal.timeout(15000))
+        .catch(() => null);
+      console.error(
+        JSON.stringify({
+          stage: "startup",
+          services: observed?.services.map(({ name, state, health }) => ({
+            name,
+            state,
+            health,
+          })),
+        }),
+      );
+      for (const id of containers(row)) {
+        const inspection = JSON.parse(docker(["inspect", id]))[0];
+        verify(inspection.Config.Labels, row);
+        const logResult = spawnSync("docker", ["logs", id], {
+          encoding: "utf8",
+          timeout: 15000,
+          env: {
+            PATH: "/usr/local/bin:/usr/bin:/bin",
+            DOCKER_HOST: "unix:///var/run/docker.sock",
+          },
+        });
+        const logs = (logResult.stdout ?? "") + (logResult.stderr ?? "");
+        const suppliedValuesExact = row.requirements.environment.every(
+          (entry) =>
+            entry.bindings
+              .filter(
+                (binding) =>
+                  binding.service ===
+                  inspection.Config.Labels["com.docker.compose.service"],
+              )
+              .every((binding) =>
+                inspection.Config.Env.includes(
+                  `${binding.name}=${row.secrets[entry.reference]}`,
+                ),
+              ),
+        );
+        console.error(JSON.stringify({ suppliedValuesExact }));
+        const healthOutput =
+          inspection.State.Health?.Log?.map((entry) => entry.Output).join(
+            "\n",
+          ) ?? "";
+        console.error(
+          JSON.stringify({
+            healthFailureKinds: [
+              "Authentication failed",
+              "ECONNREFUSED",
+              "Cannot read properties",
+              "process is not defined",
+              "not authorized",
+              "MongoServerError",
+              "not found",
+              "pthread_create",
+              "Resource temporarily unavailable",
+              "MongoNetworkError",
+              "Timeout",
+            ].filter((message) => healthOutput.includes(message)),
+            pidCount: inspection.State.Pid
+              ? docker(["top", id, "-eo", "pid"]).split("\n").length - 1
+              : 0,
+          }),
+        );
+        console.error(
+          JSON.stringify({
+            mysqlErrorCodes: [
+              ...new Set(logs.match(/MY-[0-9]{6}|ERROR [0-9]{4}/g) ?? []),
+            ],
+            oomKilled: inspection.State.OOMKilled,
+            errorKinds: [
+              "syntax",
+              "Access denied",
+              "Permission denied",
+              "No space left",
+              "Out of memory",
+              "Unable to start server",
+              "unknown variable",
+            ].filter((message) => logs.includes(message)),
+          }),
+        );
+        console.error(
+          JSON.stringify({
+            service: inspection.Config.Labels["com.docker.compose.service"],
+            status: inspection.State.Status,
+            exitCode: inspection.State.ExitCode,
+            healthExitCodes: inspection.State.Health?.Log?.map(
+              (entry) => entry.ExitCode,
+            ),
+          }),
+        );
+      }
+      throw error;
+    }
+  }
   for (const row of targets)
     assert.equal(
       (await driver.observe(row, AbortSignal.timeout(15000))).ready,
       true,
     );
-  assert.equal(
-    (
-      await fetch(`http://127.0.0.1:${hostPort}`, {
-        signal: AbortSignal.timeout(5000),
-      })
-    ).ok,
-    true,
-  );
   const node = serviceId(first, "web");
+  docker([
+    "exec",
+    node,
+    "node",
+    "-e",
+    "fetch('http://127.0.0.1:8000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+  ]);
   docker([
     "exec",
     node,
@@ -160,11 +264,56 @@ try {
       host,
       String(port),
     ]);
+  for (const row of targets) {
+    assert.equal(
+      executed.filter((input) => input === row.manifest).length,
+      2,
+      "pull and up receive exactly the accepted document",
+    );
+  }
+  // Verify supplied special characters survive Compose interpolation unchanged.
+  const mysqlPassword = first.requirements.environment.find((entry) =>
+    entry.bindings.some((binding) => binding.name === "MYSQL_PASSWORD"),
+  );
+  assert.ok(
+    docker(["exec", serviceId(first, "db"), "printenv", "MYSQL_PASSWORD"]) ===
+      first.secrets[mysqlPassword.reference].trim(),
+    "Supplied-value comparison failed",
+  );
+  const terminalContainer = await driver.terminalContainer(first, "web");
+  assert.equal(terminalContainer, node);
+  assert.equal(
+    docker(["exec", terminalContainer, "/bin/sh", "-c", "printf terminal-ok"]),
+    "terminal-ok",
+  );
+  const message = first.requirements.environment.find((entry) =>
+    entry.bindings.some((binding) => binding.name === "APP_MESSAGE"),
+  );
+  assert.ok(
+    docker([
+      "exec",
+      node,
+      "node",
+      "-p",
+      "JSON.stringify(process.env.APP_MESSAGE)",
+    ]) === JSON.stringify(first.secrets[message.reference]),
+    "Supplied-value comparison failed",
+  );
+  assert.ok(
+    docker([
+      "exec",
+      node,
+      "node",
+      "-p",
+      "JSON.stringify(process.env.APP_PASSWORD)",
+    ]) === JSON.stringify(first.secrets[mysqlPassword.reference]),
+    "Shared-value comparison failed",
+  );
   const mysql = (sql) =>
     docker([
       "exec",
       "--env",
-      `MYSQL_PWD=${first.secrets.DIC_DB_PASSWORD}`,
+      `MYSQL_PWD=${first.secrets[first.requirements.environment.find((entry) => entry.bindings.some((binding) => binding.service === "db" && binding.name === "MYSQL_PASSWORD")).reference]}`,
       serviceId(first, "db"),
       "mysql",
       "--no-defaults",
@@ -190,7 +339,7 @@ try {
   await driver.start(first, AbortSignal.timeout(8 * 60000));
   assert.equal(mysql("SELECT COUNT(*) FROM retained_data"), "1");
   console.log(
-    "All catalog images ready; same-configuration access, outbound/cross-configuration denial, and Stop/Start database retention passed.",
+    "Exact authored documents executed; supplied values and terminal authorization passed; all catalog images ready; same-configuration access, outbound/cross-configuration denial, and Stop/Start database retention passed.",
   );
 } catch (error) {
   console.error(

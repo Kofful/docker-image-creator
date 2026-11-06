@@ -18,12 +18,9 @@ import { AppModule } from "../src/app.module";
 import { configureApp } from "../src/configure-app";
 import { PrismaService } from "../src/database/prisma.service";
 import { AuthService } from "../src/auth/auth.service";
-import { compileCompose } from "../src/configs/compose.compiler";
-import {
-  digest,
-  runtimeLabels,
-  runtimeManifest,
-} from "../src/runtime/runtime.manifest";
+import { runtimeFixture } from "./runtime-fixtures";
+import { composeIdentity } from "../src/configs/compose.revision";
+import { digest, runtimeLabels } from "../src/runtime/runtime.manifest";
 import {
   DockerRuntimeDriver,
   type RuntimeTarget,
@@ -79,6 +76,7 @@ beforeEach(async () => {
       id: configId,
       userId: auth.user.id,
       name: "Terminal test",
+      inputVersion: 2,
       description: "",
       services: [{ name: "web", type: "code", image: "node" }],
       requestKey: randomUUID(),
@@ -92,7 +90,11 @@ beforeEach(async () => {
       },
     },
   });
-  const compose = compileCompose(configId, revisionId, services);
+  target = runtimeFixture(
+    composeIdentity(auth.user.id, configId, revisionId),
+    services,
+  );
+  const compose = target.manifest;
   await prisma.configRevision.create({
     data: {
       id: revisionId,
@@ -102,21 +104,11 @@ beforeEach(async () => {
       compose,
       digest: digest(compose),
       artifactPath: "unused",
-      spec: {
-        schemaVersion: 1,
-        catalogVersion: 1,
-        services: [{ name: "web", type: "code", image: "node" }],
-      },
+      spec: JSON.parse(
+        JSON.stringify(target.metadata),
+      ) as import("../src/generated/prisma/client").Prisma.InputJsonValue,
     },
   });
-  target = {
-    userId: auth.user.id,
-    configId,
-    revisionId,
-    services,
-    manifest: runtimeManifest(auth.user.id, configId, revisionId, services),
-    secrets: {},
-  };
   await prisma.deployment.create({
     data: {
       configId,
@@ -559,4 +551,22 @@ test("real terminal closes when its authentication session expires or ownership 
       data: { userId: auth.user.id },
     });
   });
+});
+
+test("legacy revisions and mismatched deployment bytes cannot obtain terminal tickets", async () => {
+  await prisma.configuration.update({
+    where: { id: configId },
+    data: { inputVersion: 1 },
+  });
+  await issue().expect(409);
+  await prisma.configuration.update({
+    where: { id: configId },
+    data: { inputVersion: 2 },
+  });
+  await prisma.deployment.update({
+    where: { configId },
+    data: { manifest: target.manifest + "# changed\n" },
+  });
+  await issue().expect(409);
+  assert.equal(await prisma.terminalTicket.count({ where: { configId } }), 0);
 });

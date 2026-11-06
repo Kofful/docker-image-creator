@@ -11,7 +11,7 @@
     "prisma:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",
     "test": "pnpm build && tsc -p tsconfig.test.json && node scripts/test-auth.mjs",
-    "test:runtime": "pnpm build && node scripts/test-runtime.mjs",
+    "test:runtime": "pnpm build && tsc -p tsconfig.test.json && node scripts/test-runtime.mjs",
     "test:compose-contract": "tsc -p tsconfig.compose-contract.json && node dist-test/test/compose-contract.test.js",
     "test:compose-provider": "tsc -p tsconfig.compose-provider.json && node dist-test/test/compose-provider.test.js",
     "test:compose-validation": "tsc -p tsconfig.compose-validation.json && node dist-test/test/compose-validation.test.js"
