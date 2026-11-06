@@ -1,6 +1,6 @@
 # Direct LLM Compose generation and supplied secrets
 
-Status: implementation started on 2026-11-05. Step 1 is implemented and verified: shared version 2 contracts, revision format/scope/digest checks, catalog extraction, policy constants and fixture, and aligned agent instructions. See the [policy contract](compose-policy.md). Step 2 adds [creation-time values and binding flow](supplied-environment.md). Step 3 adds [OpenRouter adapter](openrouter-adapter.md). Step 4 adds [strict validation and exact artifact persistence](compose-validation.md). Step 5 integrates saved execution and enables version 2 creation/generation in source. Steps 6–7, live benchmark and deployment remain pending. Q10 supersedes the earlier compatibility recommendation: existing template-generated configurations are unsupported after activation. Q11–Q12 are accepted. [ADR 0004](adr/0004-direct-llm-compose-generation.md) records the decision.
+Status: implementation started on 2026-11-05. Step 1 is implemented and verified: shared version 2 contracts, revision format/scope/digest checks, catalog extraction, policy constants and fixture, and aligned agent instructions. See the [policy contract](compose-policy.md). Step 2 adds [creation-time values and binding flow](supplied-environment.md). Step 3 adds [OpenRouter adapter](openrouter-adapter.md). Step 4 adds [strict validation and exact artifact persistence](compose-validation.md). Step 5 integrates saved execution and enables version 2 creation/generation in source. Step 6 adds the [terminal evaluator and ten executable cases](evaluation/terminal-runner.md). Step 7, the live benchmark and deployment remain pending. Q10 supersedes the earlier compatibility recommendation: existing template-generated configurations are unsupported after activation. Q11–Q12 are accepted. [ADR 0004](adr/0004-direct-llm-compose-generation.md) records the decision.
 
 ## Requirements supplied by the user
 
@@ -83,6 +83,8 @@ Gate: scoped disposable Docker tests prove a newly model-authored revision can S
 
 ### 6. Build the terminal evaluation and ten executable cases
 
+Implemented: `pnpm eval:compose`, ten fixed task inputs and trusted probes, first-response scoring, terminal/file checkpoints, secret-free recovery artifacts and cleanup-only recovery. Twenty deterministic evaluator checks and the real four-image probe/lifecycle test passed without inference or a database. See [runner usage and evidence](evaluation/terminal-runner.md).
+
 Implement `pnpm eval:compose` as a testing-only command using the same adapter, validator, and runner execution code, with in-memory orchestration instead of application database persistence. Convert the [ten accepted tasks](evaluation/compose-cases.md) into fixed prompts, fixture inputs, and trusted independent probes. Run one request per case, sequentially, without repair or template substitution.
 
 Print every case's policy/readiness/assertion results, timing, available usage, failure category, and cleanup outcome; print all three aggregate counts out of ten. Write matching `terminal.log` and checkpointed `results.json` files under `.runtime/evaluations/<runId>/`. Use disposable test values/resources, keep secrets out of reports, and verify scoped cleanup including test-only volumes and interruption recovery. Observe 120-second readiness plus ten seconds healthy; independently test behavior rather than trust model-authored health checks.
@@ -99,7 +101,7 @@ Gate: operator documentation covers configuration, reports, cutoff requirements,
 
 ## Design closure
 
-The interview frontier is empty: the user accepted the generation/evaluation boundaries, rejected legacy compatibility, and accepted creation-only values plus pre-generation completeness checks. The user subsequently authorized implementation. Work proceeds one verifiable slice at a time; steps 1–5 are implemented and step 6 (the terminal evaluation and ten executable cases) is next. Source activation is integrated; operator deployment and final benchmark verification remain separate.
+The interview frontier is empty: the user accepted the generation/evaluation boundaries, rejected legacy compatibility, and accepted creation-only values plus pre-generation completeness checks. The user subsequently authorized implementation. Work proceeds one verifiable slice at a time; steps 1–6 are implemented and step 7 (final verification and the live benchmark) is next. Source activation is integrated; operator deployment and final benchmark verification remain separate.
 
 ## Verified provider references
 

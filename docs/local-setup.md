@@ -4,6 +4,10 @@ Current generation/execution uses [version 2 saved Compose](saved-compose-runtim
 
 The default Compose stack includes web, API, MySQL, and the private runtime runner. Its supported-host runtime smoke gate is separate from API/database checks.
 
+## Terminal evaluation
+
+The standalone testing command is `pnpm eval:compose`; it needs operator-exported `OPENROUTER_API_KEY`, local Docker Engine 28+ and Compose v2.29.1+ within v2. It does not load environment files or require the application/database. It prints all ten results and checkpoints `.runtime/evaluations/<runId>/terminal.log` and `results.json`. `pnpm eval:compose --cleanup <runId>` retries verified disposable-resource cleanup without inference or Start. See [complete usage and scoring](evaluation/terminal-runner.md). Routine checks use `pnpm test:evaluation`; opt-in probe verification uses `pnpm test:evaluation:runtime`. The real-model benchmark remains unrun.
+
 ## Private runtime runner
 
 The default `infra/docker-compose.yml` includes the runner as a separate service. It waits for API health, after normal API startup has deployed committed migrations (including `20261102000000_runtime_start` and `20261102010000_runtime_delete`), then consumes queued [runtime operations](runtime-api.md). No extra runner overlay is needed.

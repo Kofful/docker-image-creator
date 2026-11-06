@@ -14,7 +14,10 @@
     "test:runtime": "pnpm build && tsc -p tsconfig.test.json && node scripts/test-runtime.mjs",
     "test:compose-contract": "tsc -p tsconfig.compose-contract.json && node dist-test/test/compose-contract.test.js",
     "test:compose-provider": "tsc -p tsconfig.compose-provider.json && node dist-test/test/compose-provider.test.js",
-    "test:compose-validation": "tsc -p tsconfig.compose-validation.json && node dist-test/test/compose-validation.test.js"
+    "test:compose-validation": "tsc -p tsconfig.compose-validation.json && node dist-test/test/compose-validation.test.js",
+    "eval:compose": "pnpm --filter @docker-image-creator/contracts build && tsc -p tsconfig.evaluation.json && node dist-test/evaluation/cli.js",
+    "test:evaluation": "pnpm --filter @docker-image-creator/contracts build && tsc -p tsconfig.evaluation.json && node dist-test/test/evaluation.test.js && node dist-test/test/evaluation-driver.test.js",
+    "test:evaluation:runtime": "pnpm --filter @docker-image-creator/contracts build && tsc -p tsconfig.evaluation.json && node dist-test/test/evaluation-runtime.test.js"
   },
   "dependencies": {
     "@docker-image-creator/contracts": "workspace:*",

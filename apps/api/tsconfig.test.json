@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "rootDir": ".", "outDir": "dist-test" },
-  "include": ["src/**/*.ts", "test/**/*.ts", "prisma.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "evaluation/**/*.ts",
+    "prisma.config.ts"
+  ]
 }

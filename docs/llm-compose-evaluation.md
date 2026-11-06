@@ -1,6 +1,6 @@
 # Evaluation of LLM-authored Compose
 
-Status: evaluation decisions Q6–Q9 accepted on 2026-11-05. The user clarified that this is a testing-only terminal tool: all results must be printed and logged to files, not the database. No evaluator has been implemented and no model or Docker evaluation has been run. This extends the [generation plan](llm-compose-plan.md).
+Status: evaluation decisions Q6–Q9 accepted on 2026-11-05. The user clarified that this is a testing-only terminal tool: all results must be printed and logged to files, not the database. The [terminal runner](evaluation/terminal-runner.md), ten executable tasks, independent probes, file reports, and cleanup recovery are implemented. Twenty deterministic checks and the real four-image probe smoke passed. No live model evaluation has been run. This extends the [generation plan](llm-compose-plan.md).
 
 ## Required outcome
 
@@ -24,12 +24,13 @@ Cleanup is mandatory execution hygiene and has a separate outcome. Do not attrib
 
 ## Terminal and file outputs
 
-Plan a dedicated `pnpm eval:compose` command; it does not exist yet. Use a test-only orchestration entry point and runner execution mode, reusing the provider adapter, Compose validator, and runner code without creating application database records. Model requests and report storage must not require the application database. Keep test values in memory and pass only private bindings to execution; never provide the model/provider key to Docker child processes or workloads.
+Use the dedicated `pnpm eval:compose` command; see [requirements, measurements, reports, and recovery](evaluation/terminal-runner.md). Use a test-only orchestration entry point and runner execution mode, reusing the provider adapter, Compose validator, and runner code without creating application database records. Model requests and report storage must not require the application database. Keep test values in memory and pass only private bindings to execution; never provide the model/provider key to Docker child processes or workloads.
 
 Every case prints its ID/task, policy result, healthy-start result, each independent assertion outcome, timing, available usage, failure category, and cleanup status. The terminal also prints the final three counts/percentages and identifies failed or incomplete cases. Write the same result information to ignored per-run files under `.runtime/evaluations/<runId>/`:
 
 - `terminal.log`: readable progress and results matching terminal output, flushed during the run.
-- `results.json`: structured run metadata, per-case outcomes/assertions, aggregate counts, timings, and cleanup status; checkpoint results so interruptions retain completed outcomes.
+- `results.json`: structured run metadata, per-case outcomes/assertions, aggregate counts, timings, and cleanup status; atomically checkpointed so interruptions retain completed outcomes.
+- `Cxx.artifact.json`: the accepted original document/metadata and value-free requirements, written before resource creation for revalidated cleanup recovery. No supplied values are persisted.
 
 Do not create database tables, generation/configuration/deployment records, or database-backed reports for evaluation. Do not persist secret values in report files. Operator-managed environment configuration supplies the provider key to the orchestration process; agent-run verification uses explicit test settings and must not load protected environment files.
 
@@ -45,11 +46,11 @@ Do not create database tables, generation/configuration/deployment records, or d
 8. In a guaranteed cleanup path, including cancellation, stop and remove only verified case-owned containers, network, artifacts, and test volumes. The user explicitly invoking a disposable evaluation authorizes deletion of that run's test data; production volumes remain untouched. Verify absence and record any recovery needs. Never use global prune.
 9. Print all per-case results and the aggregate summary, and write `terminal.log` and `results.json` as specified above. Exclude secrets, provider authorization headers, and raw inspect/container-terminal output. Keep any saved Compose artifact free of supplied secret values. Never write evaluation results to the database.
 
-## Reusable implementation and gaps
+## Shared implementation and remaining verification
 
-`apps/api/scripts/test-runtime.mjs` uses frozen authored fixtures to verify the strict validator and exact execution driver in two disposable projects. It is a lifecycle smoke, not the ten-case model evaluator or a model-quality result. The production driver waits for all services to run healthy, with a 120-second Compose readiness bound and a separate image-pull deadline. Step 5 added strict saved-document validation at the execution seam and opaque supplied-value injection; step 6 can reuse it without a database.
+`apps/api/scripts/test-runtime.mjs` uses frozen authored fixtures to verify the strict validator and exact execution driver in two disposable projects. It is a lifecycle smoke, not the ten-case model evaluator or a model-quality result. The production driver waits for all services to run healthy, with a 120-second Compose readiness bound and a separate image-pull deadline. Step 5 added strict saved-document validation at the execution seam and opaque supplied-value injection; the evaluator reuses it without a database.
 
-Evaluation must share the accepted generation/validation/execution code and policy rather than implement a more permissive alternate path. It uses a test-only in-memory orchestration/runner entry point rather than the database-backed product job queue. The benchmark is separate from the still-planned product feature that would automatically validate every generated configuration through a temporary deployment.
+The implemented evaluator shares the accepted generation/validation/execution code and policy. It uses a test-only in-memory orchestration/runner entry point rather than the database-backed product job queue. `pnpm eval:compose --cleanup <runId>` retries only pending cleanup from revalidated artifacts, without a provider key or Start. The live ten-case benchmark remains a separate step 7 gate. The benchmark is separate from the still-planned product feature that would automatically validate every generated configuration through a temporary deployment.
 
 ## Accepted scope
 

@@ -9,7 +9,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint apps packages/contracts",
-    "test": "pnpm test:compose-contract && pnpm test:compose-provider && pnpm test:compose-validation && pnpm test:web && pnpm test:api",
+    "test": "pnpm test:compose-contract && pnpm test:compose-provider && pnpm test:compose-validation && pnpm test:evaluation && pnpm test:web && pnpm test:api",
     "test:compose-provider": "pnpm --filter @docker-image-creator/api test:compose-provider",
     "test:compose-contract": "pnpm --filter @docker-image-creator/api test:compose-contract",
     "test:web": "pnpm --filter @docker-image-creator/web test",
@@ -18,7 +18,10 @@
     "test:dev": "node infra/scripts/test-dev.mjs",
     "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs",
     "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs apps packages infra docs",
-    "test:compose-validation": "pnpm --filter @docker-image-creator/api test:compose-validation"
+    "test:compose-validation": "pnpm --filter @docker-image-creator/api test:compose-validation",
+    "eval:compose": "pnpm --filter @docker-image-creator/api eval:compose",
+    "test:evaluation": "pnpm --filter @docker-image-creator/api test:evaluation",
+    "test:evaluation:runtime": "pnpm --filter @docker-image-creator/api test:evaluation:runtime"
   },
   "devDependencies": {
     "@eslint/js": "9.39.1",
