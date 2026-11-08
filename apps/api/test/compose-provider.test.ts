@@ -937,7 +937,7 @@ test("file body logs retain the rejected first completion and transport retries 
           status?: number;
           attempt: number;
           body: {
-            max_tokens?: number;
+            max_completion_tokens?: number;
             choices?: { message: { content: string } }[];
             messages?: unknown[];
           };
@@ -957,7 +957,7 @@ test("file body logs retain the rejected first completion and transport retries 
         (row) =>
           row.direction === "request" &&
           row.body.messages?.length === 2 &&
-          row.body.max_tokens === 16384,
+          row.body.max_completion_tokens === 16384,
       ),
     );
     assert.ok(records.some((row) => row.attempt === 2));
