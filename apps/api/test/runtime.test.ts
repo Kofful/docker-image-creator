@@ -41,11 +41,10 @@ import {
 } from "../src/runtime/runtime.manifest";
 import { runtimeFixture } from "./runtime-fixtures";
 import { composeIdentity } from "../src/configs/compose.revision";
-import {
-  ComposeGenerationProvider,
-  COMPOSE_MODEL,
-} from "../src/configs/compose.provider";
+import { ComposeGenerationProvider } from "../src/configs/compose.provider";
 import { unknownService } from "../src/runtime/runtime.observations";
+
+const TEST_MODEL = "modal-served-model";
 
 class ControlledDriver extends RuntimeDriver {
   states = new Map<string, { running: boolean | undefined; ready: boolean }>();
@@ -143,9 +142,9 @@ beforeEach(async () => {
           input.services,
           input.environment,
         ).manifest,
-        provider: "openrouter",
-        model: COMPOSE_MODEL,
-        reportedModel: COMPOSE_MODEL,
+        provider: "openai",
+        model: TEST_MODEL,
+        reportedModel: TEST_MODEL,
         elapsedMs: 1,
         httpAttempts: 1,
         usage: {},

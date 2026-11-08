@@ -4,17 +4,10 @@ import {
   composeResourceLabels,
   composeServiceLabels,
 } from "./compose.policy";
-import {
-  COMPOSE_VALIDATION_FEEDBACK,
-  type ComposeValidationCode,
-} from "./compose.provider";
 
 export const COMPOSE_PROMPT_VERSION = 2;
 
-export function composeMessages(
-  input: ComposeGenerationRequirements,
-  repair?: ComposeValidationCode,
-) {
+export function composeMessages(input: ComposeGenerationRequirements) {
   // Do not spread private creation requests, even if a caller passes extra fields.
   const requirements: ComposeGenerationRequirements = {
     inputVersion: 2,
@@ -41,7 +34,7 @@ export function composeMessages(
       })),
     })),
   };
-  const messages = [
+  const messages: { role: "system" | "user"; content: string }[] = [
     {
       role: "system",
       content: [
@@ -68,10 +61,5 @@ export function composeMessages(
       }),
     },
   ];
-  if (repair !== undefined)
-    messages.push({
-      role: "user",
-      content: `The previous document failed validation. ${COMPOSE_VALIDATION_FEEDBACK[repair]} Generate one complete replacement document satisfying the original requirements and policy.`,
-    });
   return messages;
 }

@@ -3,7 +3,14 @@ import { parse } from "yaml";
 import { runtimeFixture } from "./runtime-fixtures";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -26,10 +33,8 @@ import { GenerationSettings } from "../src/configs/generation.settings";
 import { allRequirements, fixture, identity } from "./compose-test-fixtures";
 import {
   ComposeGenerationProvider,
-  COMPOSE_MODEL,
   ComposeProviderFailure,
   type ComposeProviderResult,
-  type ComposeValidationCode,
 } from "../src/configs/compose.provider";
 import type {
   ComposeGenerationRequirements,
@@ -39,8 +44,12 @@ import { validateSavedCompose } from "../src/configs/compose.validator";
 import { ComposeGenerator } from "../src/configs/compose.generator";
 import { GenerationWorker } from "../src/configs/generation.worker";
 import { SecretBox } from "../src/configs/secret-box";
+import { OpenAICompatibleGenerationProvider } from "../src/configs/openai-compatible.provider";
+import { FileLlmBodyLogger } from "../src/configs/llm-body-log";
 import { ArtifactStore } from "../src/configs/artifact.store";
 import { ConfigArtifactCleanup } from "../src/configs/config-artifact-cleanup";
+
+const TEST_MODEL = "modal-served-model";
 
 let app: INestApplication;
 let prisma: PrismaService;
@@ -55,7 +64,6 @@ let generate: (
 let generateCompose: (
   input: ComposeGenerationRequirements,
   signal: AbortSignal,
-  repair?: ComposeValidationCode,
 ) => Promise<ComposeProviderResult>;
 const input: CreateComposeConfigRequest = {
   inputVersion: 2,
@@ -86,11 +94,8 @@ async function start() {
     .useValue(settings)
     .overrideProvider(ComposeGenerationProvider)
     .useValue({
-      generate: (
-        value: ComposeGenerationRequirements,
-        signal: AbortSignal,
-        repair?: ComposeValidationCode,
-      ) => generateCompose(value, signal, repair),
+      generate: (value: ComposeGenerationRequirements, signal: AbortSignal) =>
+        generateCompose(value, signal),
     })
     .compile();
   app = module.createNestApplication();
@@ -108,6 +113,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "dic-generation-"));
   settings = Object.assign(new GenerationSettings(), {
     root,
+    model: TEST_MODEL,
     pollMs: 3600000,
     generationMs: 2000,
     leaseGraceMs: 1000,
@@ -1126,9 +1132,9 @@ function directYaml(input: ComposeGenerationRequirements): string {
 function providerResult(compose: string): ComposeProviderResult {
   return {
     compose,
-    provider: "openrouter",
-    model: COMPOSE_MODEL,
-    reportedModel: COMPOSE_MODEL,
+    provider: "openai",
+    model: TEST_MODEL,
+    reportedModel: TEST_MODEL,
     elapsedMs: 10,
     httpAttempts: 1,
     usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300 },
@@ -1159,11 +1165,11 @@ test("direct generation persists exact model bytes, metadata and encrypted captu
     (await create(body, auth.access_token, key).expect(202)).body,
     created,
   );
-  assert.equal((await status(created.generationId)).provider, "openrouter");
+  assert.equal((await status(created.generationId)).provider, "openai");
   await worker.tick();
   const result = await finished(created.generationId);
   assert.equal(result.status, "succeeded");
-  assert.equal(result.model, COMPOSE_MODEL);
+  assert.equal(result.model, TEST_MODEL);
   assert.equal(result.runtimeValidation, "not_performed");
   assert.equal(calls, 1);
   const revision = await prisma.configRevision.findUniqueOrThrow({
@@ -1193,9 +1199,9 @@ test("direct generation persists exact model bytes, metadata and encrypted captu
   assert.equal(job.outputEncrypted!.includes(raw), false);
   assert.deepEqual(job.providerResponses, [
     {
-      provider: "openrouter",
-      model: COMPOSE_MODEL,
-      reportedModel: COMPOSE_MODEL,
+      provider: "openai",
+      model: TEST_MODEL,
+      reportedModel: TEST_MODEL,
       elapsedMs: 10,
       httpAttempts: 1,
       usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300 },
@@ -1220,87 +1226,55 @@ test("direct generation persists exact model bytes, metadata and encrypted captu
     .expect(404);
 });
 
-test("direct validation repairs once, retaining both encrypted responses and publishing only accepted bytes", async () => {
+test("invalid direct output fails once and retains its encrypted response without a runnable revision", async () => {
   enableDirect();
   let calls = 0;
-  let accepted = "";
   const invalid = "services: [private-test-invalid";
-  generateCompose = async (input, _signal, repair) => {
+  generateCompose = async (requirements) => {
     calls++;
-    assert.equal(repair, calls === 1 ? undefined : "INVALID_YAML");
-    accepted = directYaml(input);
-    return providerResult(calls === 1 ? invalid : accepted);
+    return providerResult(calls === 1 ? invalid : directYaml(requirements));
   };
   const created = (await create(directInput()).expect(202))
     .body as CreateConfigResponse;
   await worker.tick();
-  assert.equal((await finished(created.generationId)).status, "succeeded");
-  assert.equal(calls, 2);
+  const result = await finished(created.generationId);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "INVALID_YAML");
+  assert.equal(calls, 1);
   const job = await prisma.generationAttempt.findUniqueOrThrow({
     where: { id: created.generationId },
   });
-  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [
-    invalid,
-    accepted,
-  ]);
-  assert.equal((job.providerResponses as unknown[]).length, 2);
-  assert.equal(
-    (
-      await prisma.configRevision.findUniqueOrThrow({
-        where: { generationId: job.id },
-      })
-    ).compose,
-    accepted,
-  );
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [invalid]);
+  assert.equal((job.providerResponses as unknown[]).length, 1);
+  assert.equal(await prisma.configRevision.count(), 0);
+  await assert.rejects(stat(join(root, auth.user.id)), { code: "ENOENT" });
+  await worker.tick();
+  assert.equal((await status(created.generationId)).status, "failed");
+  assert.equal(calls, 1, "later queue ticks must not retry a failed creation");
 });
 
-test("two invalid direct responses are captured encrypted and cannot publish revisions or artifacts", async () => {
+test("policy-rejected direct output is captured once without revision or artifact publication", async () => {
   enableDirect();
   let calls = 0;
-  const invalid = "private-invalid-model-output";
-  generateCompose = async () => {
+  let invalid = "";
+  generateCompose = async (requirements) => {
     calls++;
+    invalid = directYaml(requirements) + "privileged: true\n";
     return providerResult(invalid);
   };
   const created = (await create(directInput()).expect(202))
     .body as CreateConfigResponse;
   await worker.tick();
-  assert.equal(
-    (await finished(created.generationId)).error?.code,
-    "INVALID_YAML",
-  );
-  assert.equal(calls, 2);
+  const result = await finished(created.generationId);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "UNKNOWN_FIELD");
+  assert.equal(calls, 1);
   const job = await prisma.generationAttempt.findUniqueOrThrow({
     where: { id: created.generationId },
   });
-  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [
-    invalid,
-    invalid,
-  ]);
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [invalid]);
   assert.equal(await prisma.configRevision.count(), 0);
   await assert.rejects(stat(join(root, auth.user.id)), { code: "ENOENT" });
-});
-
-test("repair provider failures retain the first response and do not fall back to the compiler", async () => {
-  enableDirect();
-  let calls = 0;
-  generateCompose = async () => {
-    if (++calls === 2)
-      throw new ComposeProviderFailure("PROVIDER_RATE_LIMITED");
-    return providerResult("invalid");
-  };
-  const created = (await create(directInput()).expect(202))
-    .body as CreateConfigResponse;
-  await worker.tick();
-  assert.equal(
-    (await finished(created.generationId)).error?.code,
-    "PROVIDER_RATE_LIMITED",
-  );
-  const job = await prisma.generationAttempt.findUniqueOrThrow({
-    where: { id: created.generationId },
-  });
-  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), ["invalid"]);
-  assert.equal(await prisma.configRevision.count(), 0);
 });
 
 test("direct provider configuration failure is explicit with no fallback", async () => {
@@ -1482,7 +1456,7 @@ test("direct rejected control-character responses stay within encrypted database
   const job = await prisma.generationAttempt.findUniqueOrThrow({
     where: { id: created.generationId },
   });
-  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [raw, raw]);
+  assert.deepEqual(directCaptures(job.outputEncrypted!, job.id), [raw]);
   assert.ok(Buffer.byteLength(job.outputEncrypted!) < 4 * 1024 * 1024);
 });
 
@@ -1611,4 +1585,58 @@ test("accepted direct fixture parses with actual Compose using only explicit dis
       stdio: ["pipe", "pipe", "pipe"],
     },
   );
+});
+
+test("config creation writes readable redacted LLM body files scoped to the authenticated user and generation", async () => {
+  const logRoot = join(root, "llm-bodies");
+  const apiKey = "mock-config-creation-key";
+  generateCompose = async (requirements, signal) =>
+    new OpenAICompatibleGenerationProvider({
+      apiKey,
+      baseURL: "https://example.modal.run/v1",
+      model: TEST_MODEL,
+      bodyLog: new FileLlmBodyLogger(logRoot),
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            model: TEST_MODEL,
+            choices: [
+              {
+                finish_reason: "stop",
+                message: {
+                  role: "assistant",
+                  content: runtimeFixture(
+                    requirements.identity,
+                    requirements.services,
+                    requirements.environment,
+                  ).manifest,
+                },
+              },
+            ],
+            debug: { api_key: apiKey, password: "mock-generated-password" },
+          }),
+        ),
+    }).generate(requirements, signal);
+  const created = (await create().expect(202)).body as CreateConfigResponse;
+  await worker.tick();
+  assert.equal((await finished(created.generationId)).status, "succeeded");
+  const directory = join(
+    logRoot,
+    auth.user.id,
+    created.configId,
+    created.generationId,
+  );
+  const files = await readdir(directory);
+  assert.equal(files.length, 2);
+  const contents = await Promise.all(
+    files.map((file) => readFile(join(directory, file), "utf8")),
+  );
+  for (const text of contents) {
+    assert.ok(!text.includes(apiKey));
+    assert.ok(!text.includes("mock-generated-password"));
+    for (const value of input.environmentValues)
+      assert.ok(!text.includes(value.value));
+  }
+  assert.ok(files.some((file) => file.endsWith(".request.json")));
+  assert.ok(files.some((file) => file.endsWith(".response.json")));
 });

@@ -27,7 +27,6 @@ import { SecretBox } from "./secret-box";
 import { validateServices } from "./service.validation";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
 import { GenerationSettings } from "./generation.settings";
-import { COMPOSE_MODEL } from "./compose.provider";
 import { prepareComposeInput } from "./compose.environment";
 import { environmentInputError } from "@docker-image-creator/contracts";
 
@@ -41,10 +40,11 @@ export function generationResponse(
     GENERATION_FAILED: "Generation could not be completed.",
     STORAGE_FAILED: "The Compose file could not be saved.",
     INTERRUPTED: "Generation was interrupted. Create a new attempt to retry.",
+    PROVIDER_LOG_FAILED: "The LLM request/response log could not be saved.",
     PROVIDER_NOT_CONFIGURED: "The generation provider is not configured.",
     PROVIDER_AUTH_FAILED: "The generation provider rejected its credentials.",
     PROVIDER_CREDITS_REQUIRED:
-      "The free model could not be used with the current provider account.",
+      "The generation provider requires available account credits.",
     MODEL_UNAVAILABLE: "The selected model is unavailable.",
     PROVIDER_RATE_LIMITED: "The generation provider rate limit was reached.",
     PROVIDER_UNAVAILABLE: "The generation provider is unavailable.",
@@ -65,9 +65,14 @@ export function generationResponse(
     configId: row.configId,
     status: row.status,
     stage: row.stage,
-    provider: row.provider === "openrouter" ? "openrouter" : "fake",
-    ...(row.provider === "openrouter" && row.model === COMPOSE_MODEL
-      ? { inputVersion: 2 as const, model: COMPOSE_MODEL }
+    provider:
+      row.provider === "openai"
+        ? "openai"
+        : row.provider === "openrouter"
+          ? "openrouter"
+          : "fake",
+    ...(["openai", "openrouter"].includes(row.provider) && row.model
+      ? { inputVersion: 2 as const, model: row.model }
       : {}),
     error: row.errorCode
       ? {
@@ -171,8 +176,8 @@ export class ConfigsService {
           generations: {
             create: {
               id: generationId,
-              provider: "openrouter",
-              model: COMPOSE_MODEL,
+              provider: "openai",
+              model: this.settings.model.slice(0, 128),
               inputEncrypted: this.box.seal(
                 JSON.stringify(prepared.requirements),
                 generationId,

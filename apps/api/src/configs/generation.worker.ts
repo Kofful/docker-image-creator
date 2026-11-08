@@ -286,6 +286,8 @@ export class GenerationWorker implements OnModuleInit, OnModuleDestroy {
               ),
               outputTruncated: oversized,
               providerResponses: metadata,
+              provider: response.provider,
+              model: response.model,
               stage: "validating",
             },
           });

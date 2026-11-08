@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ComposeGenerationRequirements } from "@docker-image-creator/contracts";
@@ -12,6 +12,8 @@ import {
   type PreparedCase,
   type Probe,
 } from "../evaluation/cases";
+import { FileLlmBodyLogger } from "../src/configs/llm-body-log";
+import { OpenAICompatibleGenerationProvider } from "../src/configs/openai-compatible.provider";
 import { evaluate } from "../evaluation/evaluator";
 import { recover } from "../evaluation/recovery";
 import {
@@ -24,7 +26,6 @@ import type { EvaluationRuntime } from "../evaluation/driver";
 import {
   ComposeGenerationProvider,
   ComposeProviderFailure,
-  COMPOSE_MODEL,
   type ComposeProviderResult,
 } from "../src/configs/compose.provider";
 import {
@@ -33,7 +34,10 @@ import {
 } from "../src/runtime/runtime.driver";
 import { runtimeFixture } from "./runtime-fixtures";
 
+const TEST_MODEL = "modal-served-model";
+
 class Provider extends ComposeGenerationProvider {
+  readonly model = TEST_MODEL;
   inputs: ComposeGenerationRequirements[] = [];
   behavior?: (
     index: number,
@@ -43,9 +47,7 @@ class Provider extends ComposeGenerationProvider {
   async generate(
     input: ComposeGenerationRequirements,
     signal: AbortSignal,
-    repair?: unknown,
   ): Promise<ComposeProviderResult> {
-    assert.equal(repair, undefined, "baseline must never request repair");
     const index = this.inputs.push(structuredClone(input)) - 1;
     const compose =
       this.behavior?.(index, input, signal) ??
@@ -53,9 +55,9 @@ class Provider extends ComposeGenerationProvider {
         .manifest;
     return {
       compose,
-      provider: "openrouter" as const,
-      model: COMPOSE_MODEL,
-      reportedModel: COMPOSE_MODEL,
+      provider: "openai" as const,
+      model: TEST_MODEL,
+      reportedModel: TEST_MODEL,
       elapsedMs: 10,
       httpAttempts: 2,
       usage: { totalTokens: 30 },
@@ -271,17 +273,42 @@ test("provider, invalid response, policy, startup and independent assertion fail
 });
 
 test("preflight failure schedules no inference; all ten cases stay in the denominator", async () => {
-  const h = harness();
-  h.runtime.preflightFailure = new RuntimeFailure("UNSUPPORTED_DOCKER");
-  const report = await h.run();
-  assert.equal(h.provider.inputs.length, 0);
-  assert.equal(report.cases.filter((c) => c.status === "not_run").length, 10);
-  assert.equal(report.scores.denominator, 10);
-  assert.equal(report.complete, false);
-  assert.equal(
-    h.reporter.lines.filter((line) => /^C\d\d:/.test(line)).length,
-    10,
-  );
+  for (const failure of [
+    new RuntimeFailure("UNSUPPORTED_DOCKER"),
+    new RuntimeFailure("DOCKER_UNAVAILABLE"),
+    new ComposeProviderFailure("PROVIDER_NOT_CONFIGURED"),
+  ]) {
+    const h = harness();
+    h.runtime.preflightFailure = failure;
+    const report = await h.run();
+    assert.equal(h.provider.inputs.length, 0);
+    assert.equal(report.cases.filter((c) => c.status === "not_run").length, 10);
+    assert.equal(report.scores.denominator, 10);
+    assert.equal(report.complete, false);
+    assert.equal(
+      h.reporter.lines.filter((line) => /^C\d\d:/.test(line)).length,
+      10,
+    );
+    assert.ok(
+      h.reporter.lines.some((line) =>
+        line.includes("No model score was measured"),
+      ),
+    );
+    assert.equal(
+      h.reporter.lines.some((line) =>
+        line.startsWith(
+          "Supply OPENAI_BASE_URL, OPENAI_API_KEY and OPENAI_MODEL",
+        ),
+      ),
+      failure.code === "PROVIDER_NOT_CONFIGURED",
+    );
+    assert.equal(
+      h.reporter.lines.some((line) =>
+        line.includes("inside the existing runner container"),
+      ),
+      failure.code === "DOCKER_UNAVAILABLE",
+    );
+  }
 });
 
 test("cleanup failure keeps recovery identities, stops scheduling and never claims a clean pass", async () => {
@@ -488,4 +515,106 @@ test("a healthy result after the 120-second startup deadline does not earn healt
     true,
   );
   assert.equal(h.runtime.cleanups.length, 10);
+});
+
+test("report records the configured provider model without credentials or endpoint URLs", async () => {
+  const provider = new Provider();
+  const runtime = new Runtime();
+  const reporter = new MemoryReporter();
+  const report = await evaluate({
+    runId: "77777777-7777-4777-8777-777777777777",
+    provider,
+    runtime,
+    reporter,
+    signal: new AbortController().signal,
+    wait: async () => {},
+  });
+  assert.equal(report.model, TEST_MODEL);
+  assert.equal(report.parameters.model, TEST_MODEL);
+  assert.equal("provider" in report.parameters, false);
+  assert.equal("apiKey" in report.parameters, false);
+  assert.equal("baseURL" in report.parameters, false);
+});
+
+test("body logging failure is an infrastructure failure and stops case scheduling", async () => {
+  const provider = new Provider();
+  provider.behavior = () => {
+    throw new ComposeProviderFailure("PROVIDER_LOG_FAILED");
+  };
+  const runtime = new Runtime();
+  const report = await evaluate({
+    runId: "77777777-7777-4777-8777-777777777777",
+    provider,
+    runtime,
+    reporter: new MemoryReporter(),
+    signal: new AbortController().signal,
+    wait: async () => {},
+  });
+  assert.equal(report.cases[0]?.status, "infrastructure_error");
+  assert.equal(report.failure, "PROVIDER_LOG_FAILED");
+  assert.equal(provider.inputs.length, 1);
+  assert.equal(report.complete, false);
+  assert.equal(runtime.launches.length, 0);
+  assert.equal(
+    report.cases[0]?.llmLogDirectory,
+    `llm/${report.cases[0]?.identity?.userId}/${report.cases[0]?.identity?.configId}/${report.cases[0]?.identity?.revisionId}`,
+  );
+});
+
+test("evaluation retains every request and policy-rejected response beside its file report", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dic-evaluation-bodies-"));
+  try {
+    const reporter = new FileReporter(directory, () => {});
+    await reporter.initialize();
+    const provider = new OpenAICompatibleGenerationProvider({
+      apiKey: "mock-evaluator-key",
+      baseURL: "https://example.modal.run/v1",
+      model: TEST_MODEL,
+      bodyLog: new FileLlmBodyLogger(join(directory, "llm")),
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            model: TEST_MODEL,
+            choices: [
+              {
+                finish_reason: "stop",
+                message: { role: "assistant", content: "forbidden: true" },
+              },
+            ],
+          }),
+        ),
+    });
+    const runtime = new Runtime();
+    const report = await evaluate({
+      runId: "77777777-7777-4777-8777-777777777777",
+      provider,
+      runtime,
+      reporter,
+      signal: new AbortController().signal,
+      wait: async () => {},
+    });
+    assert.equal(report.complete, true);
+    assert.equal(runtime.launches.length, 0);
+    for (const row of report.cases) {
+      assert.equal(row.status, "policy_rejected");
+      const path = join(directory, row.llmLogDirectory!);
+      const files = await readdir(path);
+      assert.equal(files.length, 2);
+      const response = JSON.parse(
+        await readFile(
+          join(path, files.find((file) => file.endsWith(".response.json"))!),
+          "utf8",
+        ),
+      ) as { body: { choices: { message: { content: string } }[] } };
+      assert.equal(
+        response.body.choices[0]?.message.content,
+        "forbidden: true",
+      );
+    }
+    const terminal = await readFile(join(directory, "terminal.log"), "utf8");
+    assert.ok(!terminal.includes("forbidden: true"));
+    assert.ok(!terminal.includes("mock-evaluator-key"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

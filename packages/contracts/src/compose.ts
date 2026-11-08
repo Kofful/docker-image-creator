@@ -87,6 +87,6 @@ export interface ComposeRevisionArtifact {
 export interface ComposeGenerationResponse
   extends Omit<GenerationResponse, "provider"> {
   inputVersion: 2;
-  provider: "openrouter";
-  model: "google/gemma-4-26b-a4b-it:free";
+  provider: "openai";
+  model: string;
 }

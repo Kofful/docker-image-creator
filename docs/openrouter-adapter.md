@@ -1,10 +1,12 @@
-# Direct Compose provider adapter
+# Historical OpenRouter provider adapter
+
+Superseded by the [OpenAI-compatible Modal adapter](openai-compatible-adapter.md). This document records the earlier fixed-provider implementation; current configuration uses `OPENAI_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_MODEL`.
 
 Steps 3–5 are integrated. The adapter is the only generation provider, and supplied-value inputs are enabled. Validated original output is persisted and executed through [saved Compose execution](saved-compose-runtime.md). Legacy generation/compiler code has been removed. Public status identifies each job's provider/model. No live inference was performed during implementation.
 
 ## Configuration and request boundary
 
-The operator supplies `OPENROUTER_API_KEY` to the API process. The secret-free root `.env.example` documents an empty placeholder, and `infra/docker-compose.yml` passes only that variable to the API. The development override inherits it. It is not passed to web, runner, or infrastructure MySQL. Source development uses an exported process variable; no adapter code imports dotenv, reads environment files, configures credentials, or makes a startup inference request. Restart the API after changing process configuration. An absent/blank key produces `PROVIDER_NOT_CONFIGURED` when called, without making an HTTP request; missing credentials do not block application startup.
+The operator supplies `OPENROUTER_API_KEY` to the API process. The secret-free root `.env.example` documents an empty placeholder, and `infra/docker-compose.yml` supplies it to API generation and to runner for explicitly invoked terminal evaluation. The development override inherits these settings. It is not passed to web, infrastructure MySQL, Docker child processes or generated workloads. Source development uses an exported process variable; no adapter code imports dotenv, reads environment files, configures credentials, or makes a startup inference request. Recreate API/runner after changing their Compose configuration. An absent/blank key produces `PROVIDER_NOT_CONFIGURED` when called, without making an HTTP request; missing credentials do not block application startup.
 
 `OpenRouterGenerationProvider` implements the typed `ComposeGenerationProvider` seam, a specialization of the existing `GenerationProvider`. The worker calls this typed boundary directly. It never parses a generated intermediate service specification or renders Compose. A database-independent evaluator can reuse the same provider.
 
@@ -26,7 +28,7 @@ Network failures, HTTP 408/429/5xx, and matching numeric error envelopes in HTTP
 
 `ComposeGenerator.generateValidated` accepts a validator callback and permits one complete replacement after a typed `ComposeValidationFailure`. Feedback uses fixed policy categories and static text; it never forwards parser exception messages, YAML fragments, arbitrary feedback, or the previous untrusted document. A second validation failure ends generation. Provider failures and unexpected validator exceptions do not trigger a content repair. The product maximum is two content responses, each with at most three HTTP attempts, within one five-minute deadline. Returned successful results retain both response metadata objects. Step 4 uses an awaited capture callback to encrypt every complete response before validation, including rejected responses when repair fails.
 
-The evaluator will call `ComposeGenerationProvider.generate` directly and score its first complete response, without invoking repair orchestration. Transient transport retries remain bounded and are counted; they do not repair model content. The ten-case CLI and reports are still step 6, and no model-quality score has been measured yet.
+The [terminal evaluator](evaluation/terminal-runner.md) calls `ComposeGenerationProvider.generate` directly and scores its first complete response, without invoking repair orchestration. Transient transport retries remain bounded and are counted; they do not repair model content. The ten-case CLI and file reports are implemented; no live model-quality score has been measured yet.
 
 ## Verification
 

@@ -1,21 +1,36 @@
 # Terminal Compose evaluation
 
-Step 6 is implemented in `apps/api/evaluation`. This is an explicitly invoked test runner. It shares the OpenRouter adapter, strict Compose validator, and privileged Docker runtime driver, without booting Nest, connecting to MySQL, or creating application records. The production API does not gain Docker access. No live model benchmark has been run.
+Body logging: every LLM HTTP attempt now writes paired redacted request/response JSON files below `<reportDirectory>/llm/<userId>/<configId>/<revisionId>/`, including HTTP errors and policy-rejected output. Each case reports `llmLogDirectory`. Bodies stay separate from terminal summaries and never enter the database. See [locations, redaction and limits](../llm-body-logging.md).
 
-## Run
+Step 6 is implemented in `apps/api/evaluation`. This is an explicitly invoked test runner. It shares the OpenAI-compatible adapter, strict Compose validator, and privileged Docker runtime driver, without booting Nest, connecting to MySQL, or creating application records. The production API does not gain Docker access. The operator supplied a [completed live baseline](run-074b86dd.md) with nine rate-limit failures, one policy rejection and task success 0/10; no generated workload started.
 
-Use the repository's Node 22.23.4 and pnpm 10.34.9 installation, installed workspace dependencies, Linux Docker Engine 28+ with CPU/memory/PID enforcement, and Docker Compose v2.29.1 or newer within v2. The command uses the local Unix Docker socket, with the same trusted-host boundary as the product runner. No application stack, database URL, signing key, or encryption key is required.
+## Run in the existing runner
 
-The human operator must supply `OPENROUTER_API_KEY` in the command's process environment using their normal credential mechanism. No source command loads an environment file; agents must not inspect or load protected files. With that variable already exported, run from the repository root:
+Evaluation runs as a separate, explicitly invoked process in the application's existing `runner` container. Its normal job-worker command stays unchanged; evaluation is never scheduled automatically. The runner image includes the compiled evaluator, pinned Node 22.23.4, Docker CLI and Compose. No host Node, pnpm or workspace dependencies are required. The evaluator itself boots no Nest application and makes no database connection, although the existing runner service normally uses the application database.
+
+Use Linux Docker Engine 28+ with CPU/memory/PID enforcement and Docker Compose v2.29.1 or newer within v2. From the repository root, a human operator whose root `.env` already contains the application configuration and `OPENAI_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_MODEL` first upgrades the existing runner while it has no active operations or terminals:
 
 ```bash
-pnpm eval:compose --help
-pnpm eval:compose
+docker compose --env-file .env -f infra/docker-compose.yml up -d --build --no-deps runner
 ```
 
-The command builds shared contracts and compiles the standalone runner, checks credentials are present, then checks Docker capabilities, Compose version, and availability of all four exact catalog image pins before inference. Missing credentials produce an incomplete file report without invoking Docker or the provider. Image pulls may use external registry connectivity; generated workloads remain on their internal isolated network and publish no ports.
+This assumes the application is already running. For the Docker development setup, include `-f infra/docker-compose.dev.yml` after the base file on these commands, using the same project name as the running application. Recreate runner after changing its endpoint, model, key or mount settings; `exec` uses the container's existing environment.
 
-It runs all ten cases sequentially. There is no case-selection option, repair, template substitution, alternate model, or paid fallback. The provider remains exactly `google/gemma-4-26b-a4b-it:free` with zero price ceilings and the product's bounded transport retries. Ten logical generation calls can therefore involve up to thirty HTTP attempts; successful responses report attempt counts and available usage. Failed requests may not provide usage/attempt metadata.
+Run the benchmark in that container:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec runner node dist-evaluation/evaluation/cli.js
+```
+
+From a terminal already opened inside runner at `/app/apps/api`, use `node dist-evaluation/evaluation/cli.js` directly. Append `--help` for usage. There is no separate evaluation service, image or container.
+
+Compose supplies the configured provider endpoint, model and key to API for generation and runner for explicitly invoked evaluation. The job worker does not use the key. The CLI never loads environment files. Agents must not inspect or load protected files; agent-run checks use explicit dummy settings and `--env-file /dev/null`. No key is built into the image or passed to Docker child processes/generated workloads. The API remains socket-free and the model-generated workloads retain the internal isolated network policy.
+
+The command checks credentials, Docker capabilities, Compose version and all four exact catalog image pins before inference. `PROVIDER_NOT_CONFIGURED` means runner has no usable key; `DOCKER_UNAVAILABLE` means runner could not access the daemon. All ten cases remain not run after preflight failure, and zero counts are not a model-quality measurement. Use runner for Docker execution. See [verification and operator handoff](../direct-compose-verification.md).
+
+It runs all ten cases sequentially. There is no case-selection option, repair, template substitution, alternate model, or paid fallback. The provider remains exactly `google/gemma-4-26b-a4b-it:free` with zero price ceilings and bounded transport retries. Ten logical generation calls can involve up to thirty HTTP attempts; successful responses report attempt counts and available usage. Failed requests may not provide usage/attempt metadata. Image pulls can use external registry connectivity; generated workloads remain isolated and publish no ports. Evaluation shares the existing runner's resources and daemon; run one evaluation at a time when the runner is idle.
+
+`pnpm eval:compose` remains the internal source entry point used during development; the operator workflow above runs the precompiled entry point inside runner.
 
 ## Measurements
 
@@ -31,18 +46,24 @@ C09 retains the accepted password containing dollar signs, single/double quotes,
 
 ## Reports and recovery
 
-Each run prints its report directory under `.runtime/evaluations/<runId>/`. This ignored directory contains:
+Each run prints `/app/.runtime/evaluations/<runId>/`, bind-mounted to the repository's ignored `.runtime/evaluations/<runId>/`. Reports survive runner recreation and rebuilding. This directory contains:
 
 - `terminal.log`: the same progress, individual assertion results, complete per-case result records, and final counts printed by the evaluator. Lines append during the run.
 - `results.json`: atomically replaced checkpoints containing all ten cases, distinct failure/cleanup outcomes, timings, available usage, prompt/artifact digests, suite/prompt/evaluator versions, full policy/catalog and provider parameters, and aggregate counts/percentages.
 - `Cxx.artifact.json`: only for policy-accepted cases; the original document, validated metadata, and value-free requirements. It is written before resource creation to support cleanup after a crash. It contains no private values or provider credentials. These artifacts are never a generation fallback.
 
-Directories are created with mode 0700 and files with mode 0600. Identities and expected volume names are checkpointed before Start. Each accepted case enters cleanup even on startup/assertion/cancellation/reporting errors. Cleanup has a fresh three-minute budget, verifies ownership through the shared runtime driver, removes stopped containers and the private network, then verifies and deletes only that case's expected disposable volumes. Stop/Start within a case preserves its data. A cleanup failure stops further scheduling and keeps recovery identifiers; it never changes a model score into a cleanup score.
-
-SIGINT/SIGTERM cancel pending work and allow cleanup to finish. After a forced process kill or daemon outage, stop the original evaluator process and restore the same Docker daemon before explicitly retrying cleanup:
+The existing runner runs as root for daemon access. Its report directories are mode 0700 and files mode 0600, owned by root on Linux bind mounts. Read a structured report through the container without host pnpm or changing permissions:
 
 ```bash
-pnpm eval:compose --cleanup <runId>
+docker compose --env-file .env -f infra/docker-compose.yml exec runner cat /app/.runtime/evaluations/<runId>/results.json
+```
+
+Identities and expected volume names are checkpointed before Start. Each accepted case enters cleanup even on startup/assertion/cancellation/reporting errors. Cleanup has a fresh three-minute budget, verifies ownership through the shared runtime driver, removes stopped containers and the private network, then verifies and deletes only that case's expected disposable volumes. Stop/Start within a case preserves its data. A cleanup failure stops further scheduling and keeps recovery identifiers; it never changes a model score into a cleanup score.
+
+Keep the default attached terminal. Ctrl+C sends SIGINT to the evaluator, which cancels pending work and attempts cleanup with its independent three-minute budget. Do not restart or stop runner while evaluation is active: Docker may kill an exec process without delivering SIGTERM or waiting for its cleanup. A disconnected terminal or forced kill can also leave resources pending. Stop the original evaluator process and restore the same Docker daemon before explicitly retrying cleanup:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml exec runner node dist-evaluation/evaluation/cli.js --cleanup <runId>
 ```
 
 Recovery requires neither the provider key nor saved private values. It reads bounded regular report/artifact files, rejects changed suite versions/identities/digests/policy, and revalidates the original artifact before runner cleanup. It processes pending/failed cleanup only, appends recovery outcomes to the transcript, and checkpoints them. It never generates, starts, or resumes unmeasured cases. A crash checkpoint still marked running becomes interrupted; the run remains incomplete. Recovery exits 0 when no pending cleanup remains, even if the original benchmark was incomplete. Keep the report/artifact files until all owned resources are absent; never use global prune to recover a run.
@@ -51,4 +72,6 @@ Recovery requires neither the provider key nor saved private values. It reads bo
 
 `pnpm test:evaluation` runs 20 mocked-provider/runtime and driver-boundary checks without a database or inference. They cover the ten tasks, fixed denominator, failure classification, exact C09 bytes, no repair, same-artifact persistence restart, health observation, interruption, file checkpoints/transcript agreement, secret-free artifacts/reports, rejected recovery tampering, and ownership-checked disposable volume deletion.
 
-`pnpm test:evaluation:runtime` passed on Engine 28.1.1 using all four pinned images. The frozen test-only fixture proved exact special-character messages/environment values, HTTP, cross-service HTTP, DNS/TCP, positive and negative database authentication, MySQL persistence over Stop/Start, negative readiness after stopping the database, and verified resource/volume cleanup. This verifies trusted probe execution, not model quality; the test fixture never enters the evaluator's provider path. The live ten-case benchmark is step 7 and remains unrun.
+`pnpm test:evaluation:runtime` passed on Engine 28.1.1 using all four pinned images. The frozen test-only fixture proved exact special-character messages/environment values, HTTP, cross-service HTTP, DNS/TCP, positive and negative database authentication, MySQL persistence over Stop/Start, negative readiness after stopping the database, and verified resource/volume cleanup. This verifies trusted probe execution, not model quality; the test fixture never enters the evaluator's provider path. The subsequent [live baseline](run-074b86dd.md) reached no generated workload starts.
+
+The runner image built successfully with its normal worker command unchanged. All 20 deterministic checks and the four-image Docker smoke passed through `docker compose exec` in a disposable runner container. Help, missing-key classification, persistent report/transcript access, cleanup recovery and report retention across runner recreation passed. Production/development Compose boundary checks passed. Checks used explicit non-secret settings, an idle test control process and read-only fixture mounts; no application deployment or inference was performed. See [the verification record](../direct-compose-verification.md). The operator’s [live baseline](run-074b86dd.md) is recorded separately from these deterministic checks.

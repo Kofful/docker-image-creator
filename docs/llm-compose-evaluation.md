@@ -16,7 +16,7 @@ Keep the following measures distinct, each with a count out of the same ten case
 
 Task success is the primary score: `passed cases / 10`, with healthy startup reported alongside it. Use raw counts and percentages; do not claim statistical reliability from ten examples. Also report generation latency, readiness time, available token usage, failure stage, and cleanup outcome. A model-based subjective judge is unnecessary for these objective checks.
 
-For the first baseline, make one generation request per case and score its first complete response. Do not repair or substitute a template before measuring it. Product generation permits one repair, but evaluating that behavior is a separate experiment with extra requests/time and a separately labeled result. Keep prompts, the policy contract, model identifier, parameters, case-suite version, and evaluator version fixed and recorded so runs can be compared. Exact output is not guaranteed to repeat.
+For the first baseline, make one generation request per case and score its first complete response. Do not repair or substitute a template before measuring it. Product generation now follows the same single-response rule: invalid content fails without repair. Transient HTTP retries remain bounded and are reported separately. Keep prompts, the policy contract, model identifier, parameters, case-suite version, and evaluator version fixed and recorded so runs can be compared. Exact output is not guaranteed to repeat.
 
 Provider errors, invalid output, policy rejection, startup failure, failed task assertions, infrastructure errors, and cases not run must have separate statuses. Provider failures do not disappear from the ten-task end-to-end result, but must not be described as bad Compose. A run interrupted by an infrastructure failure is incomplete; retain the ten-case denominator and show uncompleted cases rather than reporting a misleading smaller denominator. A policy-rejected case is never executed. A healthy case can still fail task assertions.
 
@@ -24,7 +24,7 @@ Cleanup is mandatory execution hygiene and has a separate outcome. Do not attrib
 
 ## Terminal and file outputs
 
-Use the dedicated `pnpm eval:compose` command; see [requirements, measurements, reports, and recovery](evaluation/terminal-runner.md). Use a test-only orchestration entry point and runner execution mode, reusing the provider adapter, Compose validator, and runner code without creating application database records. Model requests and report storage must not require the application database. Keep test values in memory and pass only private bindings to execution; never provide the model/provider key to Docker child processes or workloads.
+Use the existing runner container through `docker compose --env-file .env -f infra/docker-compose.yml exec runner node dist-evaluation/evaluation/cli.js`; see [requirements, measurements, reports, and recovery](evaluation/terminal-runner.md). This human-operator command supplies configured credentials through Compose; agent checks use `/dev/null` and explicit test settings instead. No host Node/pnpm is required. The separately invoked process reuses the provider adapter, Compose validator, and runner code without creating application database records. Model requests and report storage need no application database. Keep test values in memory and pass only private bindings to execution; never provide the model/provider key to Docker child processes or workloads.
 
 Every case prints its ID/task, policy result, healthy-start result, each independent assertion outcome, timing, available usage, failure category, and cleanup status. The terminal also prints the final three counts/percentages and identifies failed or incomplete cases. Write the same result information to ignored per-run files under `.runtime/evaluations/<runId>/`:
 
@@ -57,4 +57,4 @@ The implemented evaluator shares the accepted generation/validation/execution co
 - Testing only, explicitly invoked from the terminal, with all results both printed and written to file reports; no database persistence or evaluation UI.
 - Three distinct scores, independent probes, 120-second readiness and ten-second observation limits, and classified failures.
 - The ten defined cases within the four-image catalog and existing execution isolation.
-- A single first-response baseline per case. Repeated runs or repaired-output comparisons are separate later experiments, not part of the ten-request baseline.
+- A single first-response baseline per case. Repeated runs are separate later experiments, not part of the ten-request baseline.

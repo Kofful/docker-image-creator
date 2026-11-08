@@ -3,10 +3,14 @@ import { resolve } from "node:path";
 
 @Injectable()
 export class GenerationSettings {
+  readonly model = process.env.OPENAI_MODEL?.trim() ?? "";
   readonly suppliedEnvironmentEnabled = true;
   readonly root = resolve(
     process.env.CONFIG_ARTIFACT_ROOT ??
       resolve(__dirname, "../../../../.runtime/configs"),
+  );
+  readonly llmLogRoot = resolve(
+    process.env.LLM_LOG_ROOT ?? resolve(this.root, "../llm"),
   );
   readonly encryptionKey: Buffer;
   readonly generationMs = 5 * 60 * 1000;

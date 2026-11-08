@@ -1,14 +1,13 @@
 import type { ComposeGenerationRequirements } from "@docker-image-creator/contracts";
 import { GenerationProvider } from "./generation.provider";
 
-export const COMPOSE_MODEL = "google/gemma-4-26b-a4b-it:free";
 export const COMPOSE_GENERATION_MS = 5 * 60 * 1000;
 
 export interface ComposeProviderResult {
   /** Complete, unmodified model content. Still requires YAML/policy validation. */
   compose: string;
-  provider: "openrouter";
-  model: typeof COMPOSE_MODEL;
+  provider: "openai";
+  model: string;
   reportedModel: string;
   elapsedMs: number;
   httpAttempts: number;
@@ -20,6 +19,7 @@ export interface ComposeProviderResult {
 }
 
 export type ComposeProviderFailureCode =
+  | "PROVIDER_LOG_FAILED"
   | "PROVIDER_NOT_CONFIGURED"
   | "PROVIDER_AUTH_FAILED"
   | "PROVIDER_CREDITS_REQUIRED"
@@ -42,34 +42,19 @@ export class ComposeProviderFailure extends Error {
   }
 }
 
-// Fixed categories only: never send parser exception messages/values to a model.
-export const COMPOSE_VALIDATION_FEEDBACK = {
-  INVALID_YAML:
-    "Return one YAML mapping without fences, aliases, tags, duplicate keys or extra documents.",
-  UNKNOWN_FIELD:
-    "Use only the fields allowed by the policy at every nesting level.",
-  IDENTITY_MISMATCH:
-    "Preserve the exact project, service names and ownership labels supplied in the request.",
-  IMAGE_MISMATCH:
-    "Use exactly the requested services and pinned catalog images.",
-  RESOURCE_POLICY:
-    "Include every required container resource, logging and isolation setting exactly.",
-  NETWORK_POLICY:
-    "Use only the required private stack network with its exact settings and labels.",
-  STORAGE_POLICY:
-    "Use only the required database named volumes with exact mounts and labels.",
-  PORT_POLICY: "Do not publish any ports; omit ports on every service.",
-  ENVIRONMENT_POLICY:
-    "Preserve every assigned environment binding using its exact required opaque reference; invent no secrets or references.",
-  COMMAND_POLICY:
-    "Use argument arrays and only tools/libraries already present in the pinned image; no installation or downloads.",
-  HEALTH_POLICY:
-    "Include an actual readiness health check on every service with the required timing settings.",
-  DEPENDENCY_POLICY:
-    "Depend only on requested services with service_healthy; avoid self references and cycles.",
-} as const;
-
-export type ComposeValidationCode = keyof typeof COMPOSE_VALIDATION_FEEDBACK;
+export type ComposeValidationCode =
+  | "INVALID_YAML"
+  | "UNKNOWN_FIELD"
+  | "IDENTITY_MISMATCH"
+  | "IMAGE_MISMATCH"
+  | "RESOURCE_POLICY"
+  | "NETWORK_POLICY"
+  | "STORAGE_POLICY"
+  | "PORT_POLICY"
+  | "ENVIRONMENT_POLICY"
+  | "COMMAND_POLICY"
+  | "HEALTH_POLICY"
+  | "DEPENDENCY_POLICY";
 
 export class ComposeValidationFailure extends Error {
   constructor(readonly code: ComposeValidationCode) {
@@ -81,14 +66,15 @@ export abstract class ComposeGenerationProvider extends GenerationProvider<
   ComposeGenerationRequirements,
   ComposeProviderResult
 > {
+  readonly model?: string;
+
   abstract generate(
     input: ComposeGenerationRequirements,
     signal: AbortSignal,
-    repair?: ComposeValidationCode,
   ): Promise<ComposeProviderResult>;
 }
 
-/** Caller cancellation and all content/transport attempts share this deadline. */
+/** The single generation response, capture and transport retries share this deadline. */
 export async function withinComposeDeadline<T>(
   parent: AbortSignal,
   durationMs: number,

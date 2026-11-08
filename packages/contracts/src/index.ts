@@ -67,8 +67,8 @@ export interface GenerationResponse {
   configId: string;
   status: GenerationStatus;
   stage: string;
-  provider: "fake" | "openrouter";
-  model?: "google/gemma-4-26b-a4b-it:free";
+  provider: "fake" | "openrouter" | "openai";
+  model?: string;
   inputVersion?: 2;
   error: { code: string; message: string } | null;
   createdAt: string;

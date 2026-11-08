@@ -4,6 +4,7 @@ import {
   ComposeValidationFailure,
   type ComposeGenerationProvider,
 } from "../src/configs/compose.provider";
+import { bodyLogDirectory } from "../src/configs/llm-body-log";
 import { composeMessages } from "../src/configs/compose.prompt";
 import { validateCompose } from "../src/configs/compose.validator";
 import {
@@ -62,7 +63,7 @@ export async function evaluate(
   const { provider, runtime, reporter, signal } = options;
   const now = options.now ?? (() => performance.now());
   const wait = options.wait ?? pause;
-  const report = newReport(options.runId);
+  const report = newReport(options.runId, provider.model);
   await reporter.checkpoint(report);
   await reporter.line(
     `Run ${report.runId}; ${report.model}; first response, no repair; ten cases. Preflight Docker/Compose and four pinned images.`,
@@ -83,6 +84,14 @@ export async function evaluate(
     await reporter.line(
       `Preflight failed: ${report.failure}; no inference scheduled.`,
     );
+    if (report.failure === "PROVIDER_NOT_CONFIGURED")
+      await reporter.line(
+        "Supply OPENAI_BASE_URL, OPENAI_API_KEY and OPENAI_MODEL to the runner container before starting a fresh run. Recreate runner after updating its operator-managed Compose configuration; this CLI does not load environment files. Never include the key in a report.",
+      );
+    if (report.failure === "DOCKER_UNAVAILABLE")
+      await reporter.line(
+        "Run node dist-evaluation/evaluation/cli.js inside the existing runner container, which includes Docker CLI, Compose and /var/run/docker.sock. The application API container intentionally has no Docker access.",
+      );
   }
   await reporter.checkpoint(report);
   if (report.preflight === "passed")
@@ -95,6 +104,7 @@ export async function evaluate(
       const row = report.cases[index]!;
       row.status = "running";
       row.identity = prepared.requirements.identity;
+      row.llmLogDirectory = `llm/${bodyLogDirectory(row.identity)}`;
       row.promptDigest = hash(
         JSON.stringify(composeMessages(prepared.requirements)),
       );
@@ -280,6 +290,10 @@ export async function evaluate(
   await reporter.line(
     `Policy ${report.scores.policy}/10 (${report.scores.policyPercent}%); healthy ${report.scores.healthy}/10 (${report.scores.healthyPercent}%); task success ${report.scores.task}/10 (${report.scores.taskPercent}%).`,
   );
+  if (report.preflight === "failed")
+    await reporter.line(
+      "No model score was measured: preflight failed and all ten cases remain not run. The zero counts above are not model-quality results.",
+    );
   await reporter.line(
     `Complete: ${report.complete}; operationally successful: ${report.operationallySuccessful}; failure: ${report.failure ?? "none"}. Model failures have no minimum pass-rate gate.`,
   );
@@ -297,6 +311,12 @@ function classify(
   if (signal.aborted) {
     row.status = "interrupted";
     report.failure = "INTERRUPTED";
+  } else if (
+    error instanceof ComposeProviderFailure &&
+    error.code === "PROVIDER_LOG_FAILED"
+  ) {
+    row.status = "infrastructure_error";
+    report.failure = error.code;
   } else if (error instanceof ComposeProviderFailure)
     row.status =
       /^(OUTPUT_|PROVIDER_INVALID_RESPONSE|PROVIDER_MODEL_MISMATCH)/.test(

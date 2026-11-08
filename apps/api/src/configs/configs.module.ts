@@ -9,7 +9,8 @@ import { ArtifactStore } from "./artifact.store";
 import { ConfigArtifactCleanup } from "./config-artifact-cleanup";
 import { GenerationWorker } from "./generation.worker";
 import { ComposeGenerationProvider } from "./compose.provider";
-import { OpenRouterGenerationProvider } from "./openrouter.provider";
+import { OpenAICompatibleGenerationProvider } from "./openai-compatible.provider";
+import { FileLlmBodyLogger } from "./llm-body-log";
 import { ComposeGenerator } from "./compose.generator";
 
 @Module({
@@ -26,9 +27,13 @@ import { ComposeGenerator } from "./compose.generator";
     ComposeGenerator,
     {
       provide: ComposeGenerationProvider,
-      useFactory: () =>
-        new OpenRouterGenerationProvider({
-          apiKey: process.env.OPENROUTER_API_KEY,
+      inject: [GenerationSettings],
+      useFactory: (settings: GenerationSettings) =>
+        new OpenAICompatibleGenerationProvider({
+          apiKey: process.env.OPENAI_API_KEY,
+          baseURL: process.env.OPENAI_BASE_URL,
+          model: process.env.OPENAI_MODEL,
+          bodyLog: new FileLlmBodyLogger(settings.llmLogRoot),
         }),
     },
   ],

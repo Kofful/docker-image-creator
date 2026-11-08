@@ -17,7 +17,7 @@ Existing version 1 data is unsupported by this new gate. It is not converted or 
 
 ## Required YAML subset
 
-`apps/api/src/configs/compose.policy.ts` holds versioned allowlists and exact required settings. The implemented provider prompt includes these settings and server identities before generation. Missing settings require repair/failure; the application must not inject defaults into generated YAML.
+`apps/api/src/configs/compose.policy.ts` holds versioned allowlists and exact required settings. The implemented provider prompt includes these settings and server identities before generation. Missing settings fail creation immediately; the application must not inject defaults into generated YAML.
 
 The validator now enforces the following before saving version 2 revisions. Step 5 must invoke it again before execution:
 

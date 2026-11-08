@@ -7,12 +7,14 @@ RUN npm install --global pnpm@10.34.9
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @docker-image-creator/api... build
+RUN pnpm --filter @docker-image-creator/api exec tsc -p tsconfig.evaluation-image.json
 FROM base AS runtime
 ENV NODE_ENV=production
 WORKDIR /app/apps/api
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/apps/api/node_modules ./node_modules
 COPY --from=build /app/apps/api/dist ./dist
+COPY --from=build /app/apps/api/dist-evaluation ./dist-evaluation
 COPY --from=build /app/packages/contracts/dist /app/packages/contracts/dist
 COPY --from=build /app/packages/contracts/package.json /app/packages/contracts/package.json
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker

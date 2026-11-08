@@ -1,8 +1,8 @@
 import "reflect-metadata";
 import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
-import { ComposeProviderFailure } from "../src/configs/compose.provider";
-import { OpenRouterGenerationProvider } from "../src/configs/openrouter.provider";
+import { OpenAICompatibleGenerationProvider } from "../src/configs/openai-compatible.provider";
+import { FileLlmBodyLogger } from "../src/configs/llm-body-log";
 import { EvaluationDockerDriver } from "./driver";
 import { evaluate } from "./evaluator";
 import { FileReporter } from "./report";
@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "--help") {
     process.stdout.write(
-      "pnpm eval:compose\nRuns all ten cases sequentially using the pinned free OpenRouter model; first response, no repair.\nRequires operator-exported OPENROUTER_API_KEY and supported Docker/Compose. No env files or application database are loaded.\nReports: .runtime/evaluations/<runId>/{terminal.log,results.json}. Disposable test data is deleted after each case.\nSIGINT/SIGTERM cancel inference/execution and attempt bounded cleanup. Exit 0 means a complete, cleaned run (any model score); exit 1 means an operational failure/incomplete run.\npnpm eval:compose --cleanup <runId> retries only pending/failed cleanup using revalidated secret-free artifacts; no key, inference, or Start.\n",
+      "docker compose --env-file .env -f infra/docker-compose.yml exec runner node dist-evaluation/evaluation/cli.js\nRuns all ten cases as a separate process inside the existing runner container using the configured OpenAI-compatible model; first response, no repair. No host Node or pnpm is required.\nRebuild/recreate runner once after upgrading. Compose supplies operator-managed OPENAI_BASE_URL, OPENAI_API_KEY and OPENAI_MODEL to runner. The CLI loads no env files or application database.\nReports: /app/.runtime/evaluations/<runId>/{terminal.log,results.json}, persisted in the repository's .runtime/evaluations bind mount. Redacted request/response JSON files are under llm/<userId>/<configId>/<revisionId>/. Disposable test data is deleted after each case.\nKeep this command attached; Ctrl+C cancels inference/execution and attempts bounded cleanup. Avoid restarting runner during evaluation; container shutdown may kill the exec process before cleanup. Exit 0 means a complete, cleaned run (any model score); exit 1 means an operational failure/incomplete run.\nAppend --cleanup <runId> to retry only pending/failed cleanup using revalidated secret-free artifacts; no key, inference, or Start is needed by recovery. Append --help for this usage.\n",
     );
     return;
   }
@@ -23,9 +23,7 @@ async function main(): Promise<void> {
       args[1]!,
     );
   if (args.length && !cleanup) {
-    process.stderr.write(
-      "Usage: pnpm eval:compose [--help | --cleanup <runId>]\n",
-    );
+    process.stderr.write("Usage: evaluation [--help | --cleanup <runId>]\n");
     process.exitCode = 1;
     return;
   }
@@ -64,18 +62,25 @@ async function main(): Promise<void> {
       return;
     }
     // Never load an env file. The operator supplies this process variable privately.
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const provider = new OpenAICompatibleGenerationProvider({
+      apiKey: process.env.OPENAI_API_KEY,
+      baseURL: process.env.OPENAI_BASE_URL,
+      model: process.env.OPENAI_MODEL,
+      bodyLog: new FileLlmBodyLogger(join(directory, "llm")),
+    });
     class ConfiguredDriver extends EvaluationDockerDriver {
       override async preflight(signal: AbortSignal): Promise<void> {
-        if (!apiKey?.trim() || /[\r\n]/.test(apiKey))
-          throw new ComposeProviderFailure("PROVIDER_NOT_CONFIGURED");
+        provider.assertConfigured();
         await super.preflight(signal);
       }
     }
     await reporter.line(`Report directory: ${directory}`);
+    await reporter.line(
+      `Redacted LLM request/response bodies: ${join(directory, "llm")}`,
+    );
     const report = await evaluate({
       runId,
-      provider: new OpenRouterGenerationProvider({ apiKey }),
+      provider,
       runtime: new ConfiguredDriver(),
       reporter,
       signal: controller.signal,

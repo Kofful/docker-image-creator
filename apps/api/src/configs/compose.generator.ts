@@ -3,13 +3,11 @@ import type { ComposeGenerationRequirements } from "@docker-image-creator/contra
 import {
   COMPOSE_GENERATION_MS,
   ComposeGenerationProvider,
-  ComposeValidationFailure,
   type ComposeProviderResult,
-  type ComposeValidationCode,
   withinComposeDeadline,
 } from "./compose.provider";
 
-/** Product-only one-repair orchestration. Evaluation calls the provider directly. */
+/** Generate once, capture the response, then validate without replacement requests. */
 @Injectable()
 export class ComposeGenerator {
   constructor(private readonly provider: ComposeGenerationProvider) {}
@@ -19,28 +17,16 @@ export class ComposeGenerator {
     signal: AbortSignal,
     validate: (compose: string) => T,
     capture?: (response: ComposeProviderResult) => Promise<void>,
-  ): Promise<{ value: T; responses: ComposeProviderResult[] }> {
+  ): Promise<{ value: T; response: ComposeProviderResult }> {
     return withinComposeDeadline(
       signal,
       COMPOSE_GENERATION_MS,
       async (bounded) => {
-        const responses: ComposeProviderResult[] = [];
-        let repair: ComposeValidationCode | undefined;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const response = await this.provider.generate(input, bounded, repair);
-          if (bounded.aborted) throw bounded.reason;
-          responses.push(response);
-          await capture?.(response);
-          if (bounded.aborted) throw bounded.reason;
-          try {
-            return { value: validate(response.compose), responses };
-          } catch (error) {
-            if (!(error instanceof ComposeValidationFailure) || attempt === 1)
-              throw error;
-            repair = error.code;
-          }
-        }
-        throw new Error("Unreachable generation state");
+        const response = await this.provider.generate(input, bounded);
+        if (bounded.aborted) throw bounded.reason;
+        await capture?.(response);
+        if (bounded.aborted) throw bounded.reason;
+        return { value: validate(response.compose), response };
       },
     );
   }

@@ -32,10 +32,18 @@ services:
       AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-http://127.0.0.1:8080}
       CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?Set CONFIG_ENCRYPTION_KEY to 32 random bytes encoded as 64 hexadecimal characters (openssl rand -hex 32)}
       CONFIG_ARTIFACT_ROOT: /app/.runtime/configs
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_LOG_ROOT: /app/.runtime/llm
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
       TERMINAL_RUNNER_URL: ws://runner:3001/terminal
     volumes:
       - generated-configs:/app/.runtime/configs
+      - type: bind
+        source: ../.runtime/llm
+        target: /app/.runtime/llm
+        bind:
+          create_host_path: false
     depends_on:
       mysql:
         condition: service_healthy
@@ -63,9 +71,14 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL with URL-encoded MySQL credentials}
       CONFIG_ENCRYPTION_KEY: ${CONFIG_ENCRYPTION_KEY:?Set CONFIG_ENCRYPTION_KEY}
       CONFIG_ARTIFACT_ROOT: /app/.runtime/configs
+      # Used only by the explicitly invoked evaluation CLI, not the job worker.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - generated-configs:/app/.runtime/configs
+      - ../.runtime/evaluations:/app/.runtime/evaluations
     depends_on:
       api:
         condition: service_healthy

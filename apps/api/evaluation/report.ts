@@ -8,11 +8,8 @@ import type {
 } from "@docker-image-creator/contracts";
 import { COMPOSE_POLICY } from "../src/configs/compose.policy";
 import { COMPOSE_PROMPT_VERSION } from "../src/configs/compose.prompt";
-import {
-  COMPOSE_MODEL,
-  type ComposeProviderResult,
-} from "../src/configs/compose.provider";
-import { OPENROUTER_PARAMETERS } from "../src/configs/openrouter.provider";
+import { type ComposeProviderResult } from "../src/configs/compose.provider";
+import { COMPLETION_PARAMETERS } from "../src/configs/openai-compatible.provider";
 import { CASES, EVALUATOR_VERSION, SUITE_VERSION } from "./cases";
 
 export type CaseStatus =
@@ -40,6 +37,7 @@ export interface CaseResult {
   identity?: ComposeIdentity;
   volumes?: string[];
   promptDigest?: string;
+  llmLogDirectory?: string;
   composeDigest?: string;
   usage?: ComposeProviderResult["usage"];
   httpAttempts?: number;
@@ -60,8 +58,8 @@ export interface EvaluationReport {
   suiteDigest: string;
   promptVersion: number;
   policy: typeof COMPOSE_POLICY;
-  parameters: typeof OPENROUTER_PARAMETERS;
-  model: typeof COMPOSE_MODEL;
+  parameters: typeof COMPLETION_PARAMETERS & { model: string };
+  model: string;
   mode: "first-response-no-repair";
   preflight: "pending" | "passed" | "failed";
   failure?: string;
@@ -81,7 +79,10 @@ export interface EvaluationReport {
 export const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
-export function newReport(runId: string): EvaluationReport {
+export function newReport(
+  runId: string,
+  model = "unconfigured",
+): EvaluationReport {
   return {
     runId,
     startedAt: new Date().toISOString(),
@@ -90,8 +91,8 @@ export function newReport(runId: string): EvaluationReport {
     suiteDigest: hash(JSON.stringify(CASES)),
     promptVersion: COMPOSE_PROMPT_VERSION,
     policy: COMPOSE_POLICY,
-    parameters: OPENROUTER_PARAMETERS,
-    model: COMPOSE_MODEL,
+    parameters: { ...COMPLETION_PARAMETERS, model },
+    model,
     mode: "first-response-no-repair",
     preflight: "pending",
     complete: false,
