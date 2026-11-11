@@ -4,8 +4,9 @@ import {
   composeResourceLabels,
   composeServiceLabels,
 } from "./compose.policy";
+import { MYSQL_BOOTSTRAP_EXAMPLE } from "./mysql-bootstrap.example";
 
-export const COMPOSE_PROMPT_VERSION = 3;
+export const COMPOSE_PROMPT_VERSION = 4;
 
 export function composeMessages(input: ComposeGenerationRequirements) {
   // Do not spread private creation requests, even if a caller passes extra fields.
@@ -52,6 +53,7 @@ export function composeMessages(input: ComposeGenerationRequirements) {
         "Only databases have mounts. For every policy databaseMounts entry create <service>-<suffix> with resourceLabels; mount it using type: volume, source, target and read_only: false. Omit unused top-level volumes.",
         "Environment must be a string-to-string mapping. Each supplied binding must use exactly ${<reference>:?Required value}. Reuse the assigned reference for shared bindings. Do not invent credentials, values, bindings or interpolation references. Private values are deliberately unavailable to you. Values may contain quotes, dollars, backslashes, spaces or line breaks; read them without reinterpreting or losing bytes. Stock image initialization may have character limitations; author robust behavior without inventing or changing credentials.",
         "MySQL requires MYSQL_ROOT_PASSWORD and MYSQL_PASSWORD bindings; public defaults are MYSQL_USER: app and MYSQL_DATABASE: requested database or app. MongoDB requires MONGO_INITDB_ROOT_PASSWORD; public defaults are MONGO_INITDB_ROOT_USERNAME: app and MONGO_INITDB_DATABASE: requested database or app. Assigned user bindings override those public defaults. No other literal environment settings.",
+        "MYSQL INITIALIZATION: The pinned image's stock initializer inserts passwords into SQL without safe encoding. Quotes/backslashes can break it. For every MySQL service, copy mysqlBootstrap.command exactly from the request and use mysqlBootstrap.healthcheckTest as healthcheck.test, retaining the policy health timing. These are tested Compose-escaped argument arrays: do not simplify them, change their quoting, or escape their dollars again. They initialize the requested database and credentials using SQL literals under NO_BACKSLASH_ESCAPES, preserve raw environment values and reuse an existing data directory without changing credentials or data. The command prepares directories before dropping to the image's mysql user and reuses its normal server lifecycle. Do not add entrypoint, script files, mounts, temporary credentials or additional environment settings. An initdb SQL file alone cannot fix stock account creation, which runs before initdb files. mysqladmin ping alone does not verify authentication; use the supplied authenticated query health check.",
         "Escape every container-side dollar sign as $$ in command/health strings. Only declared opaque references may use Compose interpolation. Never interpolate resource identities.",
         `Prompt version: ${COMPOSE_PROMPT_VERSION}. Policy:\n${JSON.stringify(COMPOSE_POLICY, null, 2)}`,
         "Before responding, silently check that the output is one complete YAML mapping with the exact project name, requested services and images, all required settings and labels, valid secret references, and no text outside the document. Return the YAML now.",
@@ -65,6 +67,9 @@ export function composeMessages(input: ComposeGenerationRequirements) {
           requirements,
           resourceLabels: composeResourceLabels(requirements.identity),
           serviceLabels: composeServiceLabels(requirements.identity),
+          ...(requirements.services.some((service) => service.image === "mysql")
+            ? { mysqlBootstrap: MYSQL_BOOTSTRAP_EXAMPLE }
+            : {}),
           outputContract: {
             format:
               "One raw Docker Compose YAML document only; no prose, Markdown, examples or questions.",

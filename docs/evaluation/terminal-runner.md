@@ -42,7 +42,7 @@ Probe programs are evaluator-owned, use fixed argument arrays, and return only a
 
 The three scores always use ten as their denominator: policy acceptance, healthy startup, and task success. A healthy but unrelated server can fail independent assertions. Provider failures and invalid/truncated responses remain separate from policy rejection, startup failure, task assertion failure, infrastructure errors, and interrupted/not-run cases. Null results/assertions mean they were not measured. A completed, cleaned run exits 0 regardless of model score; an incomplete run or unresolved cleanup exits 1. There is no 100% quality threshold.
 
-C09 retains the accepted password containing dollar signs, single/double quotes, backslashes, spaces, and `#`. The stock database image's initialization limitations can cause a model-authored configuration to fail this case. The evaluator does not simplify the password or replace the output to obtain a passing result.
+C09 retains the accepted password containing dollar signs, single/double quotes, backslashes, spaces, and `#`. The stock database image's initialization limitations can cause a model-authored configuration to fail this case. Prompt version 4 supplies a [tested MySQL bootstrap example](../mysql-bootstrap.md) for the model to include, with safe SQL encoding and authenticated readiness. The evaluator does not simplify the password or replace the output to obtain a passing result. The example's real Docker regressions verify C09 and extended multiline credentials without calling the model; they do not establish a model pass rate.
 
 ## Reports and recovery
 

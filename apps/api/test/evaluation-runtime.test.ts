@@ -5,6 +5,8 @@ import { parse, stringify } from "yaml";
 import { CASES, prepareCase } from "../evaluation/cases";
 import { EvaluationDockerDriver } from "../evaluation/driver";
 import { validateCompose } from "../src/configs/compose.validator";
+import { composeMessages } from "../src/configs/compose.prompt";
+import type { RuntimeTarget } from "../src/runtime/runtime.driver";
 import { runtimeFixture } from "./runtime-fixtures";
 
 // Trusted test-only application programs in a frozen policy fixture. No inference,
@@ -16,6 +18,164 @@ class Handler(http.server.BaseHTTPRequestHandler):
   self.send_response(200);self.end_headers();self.wfile.write(os.environ['APP_MESSAGE'].encode() if self.path=='/message' else b'ok')
  def log_message(self,*args): pass
 http.server.HTTPServer(('0.0.0.0',8000),Handler).serve_forever()`;
+
+// Additional regression probes read the whole password, including trailing
+// newlines. The fixed C09 benchmark probes intentionally read a single line.
+class MysqlBootstrapDriver extends EvaluationDockerDriver {
+  async query(
+    target: RuntimeTarget,
+    root: boolean,
+    query: string,
+    signal: AbortSignal,
+    denied = false,
+  ) {
+    const name = root ? "MYSQL_ROOT_PASSWORD" : "MYSQL_PASSWORD";
+    const reference = target.requirements.environment.find((entry) =>
+      entry.bindings.some((binding) => binding.name === name),
+    )!.reference;
+    const script = [
+      'MYSQL_PWD="$(cat; printf .)"',
+      'MYSQL_PWD="${MYSQL_PWD%.}"; export MYSQL_PWD',
+      'output=$(mysql --no-defaults --connect-timeout=3 --protocol=TCP -h 127.0.0.1 --user="$1" --database="$MYSQL_DATABASE" --batch --skip-column-names -e "$2" 2>&1); status=$?',
+      'if [ "$status" = 0 ] && [ "$output" = 1 ]; then printf PASS; else case "$output" in *"ERROR 1045 ("*) printf DENIED;; *) printf FAIL;; esac; fi',
+    ].join("\n");
+    return this.command(
+      [
+        "exec",
+        "-i",
+        await this.terminalContainer(target, "db"),
+        "sh",
+        "-c",
+        script,
+        "--",
+        root ? "root" : "app",
+        query,
+      ],
+      signal,
+      denied
+        ? "deliberately-incorrect-test-password"
+        : target.secrets[reference],
+    );
+  }
+}
+
+for (const extended of [false, true])
+  test(
+    `C09 MySQL ${extended ? "with multiline root/app credentials and SQL-like text" : "with suite credentials"} initializes exact values and retains data after Stop/Start`,
+    { timeout: 5 * 60000 },
+    async (context) => {
+      const prepared = prepareCase(CASES[8]!);
+      if (extended) {
+        prepared.requirements.services[0]!.database = "orders_archive";
+        for (const entry of prepared.requirements.environment)
+          prepared.secrets[entry.reference] +=
+            "'\"; DROP DATABASE orders_archive; -- \\c $ # café\r\nlast line\n";
+      }
+      const driver = new MysqlBootstrapDriver();
+      const fixture = runtimeFixture(
+        prepared.requirements.identity,
+        prepared.requirements.services,
+        prepared.requirements.environment,
+      );
+      // Exercise the exact example sent to the model, after YAML serialization
+      // and real Compose interpolation, rather than a separate test bootstrap.
+      const request = JSON.parse(
+        composeMessages(prepared.requirements)[1]!.content,
+      ) as {
+        mysqlBootstrap: { command: string[]; healthcheckTest: string[] };
+      };
+      const document = parse(fixture.manifest) as {
+        services: {
+          db: { command: string[]; healthcheck: { test: string[] } };
+        };
+      };
+      document.services.db.command = request.mysqlBootstrap.command;
+      document.services.db.healthcheck.test =
+        request.mysqlBootstrap.healthcheckTest;
+      const artifact = validateCompose(
+        stringify(document),
+        prepared.requirements,
+      );
+      const target = {
+        ...fixture,
+        manifest: artifact.compose,
+        metadata: artifact.metadata,
+        digest: artifact.digest,
+        secrets: prepared.secrets,
+      };
+      const signal = AbortSignal.any([
+        context.signal,
+        AbortSignal.timeout(3 * 60000),
+      ]);
+      try {
+        await driver.launch(target, signal);
+        if (!extended)
+          for (const probe of prepared.definition.probes)
+            assert.ok(
+              await driver.probe(target, prepared, probe, signal),
+              `C09 probe failed: ${probe.id}`,
+            );
+        assert.ok(
+          await driver.probe(
+            target,
+            prepared,
+            { id: "environment", service: "db", kind: "environment" },
+            signal,
+          ),
+          "Exact environment delivery failed",
+        );
+        for (const root of [false, true]) {
+          assert.equal(
+            await driver.query(target, root, "SELECT 1", signal),
+            "PASS",
+            "Exact credential authentication failed",
+          );
+          assert.equal(
+            await driver.query(target, root, "SELECT 1", signal, true),
+            "DENIED",
+            "Wrong password was not rejected",
+          );
+        }
+        assert.equal(
+          await driver.query(
+            target,
+            false,
+            "SELECT CONVERT_TZ('2020-01-01 00:00:00','UTC','UTC') = '2020-01-01 00:00:00'",
+            signal,
+          ),
+          "PASS",
+          "Stock timezone initialization was not preserved",
+        );
+        if (extended)
+          assert.equal(
+            await driver.query(
+              target,
+              false,
+              "CREATE TABLE evaluation_marker (id INT PRIMARY KEY); INSERT INTO evaluation_marker VALUES (1); SELECT 1",
+              signal,
+            ),
+            "PASS",
+          );
+        await driver.stop(target, signal);
+        await driver.launch(target, signal);
+        assert.equal(
+          await driver.query(
+            target,
+            false,
+            "SELECT COUNT(*) FROM evaluation_marker WHERE id=1",
+            signal,
+          ),
+          "PASS",
+          "C09 persistence marker was not retained",
+        );
+      } finally {
+        await driver.cleanup(
+          { ...target, secrets: {} },
+          AbortSignal.timeout(60000),
+        );
+      }
+    },
+  );
 
 test(
   "real four-image evaluator probes: exact values/HTTP/DNS/auth, negative auth/readiness, persistence and verified test-volume cleanup",

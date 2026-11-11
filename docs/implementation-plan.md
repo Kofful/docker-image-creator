@@ -1,5 +1,9 @@
 # Implementation plan
 
+MySQL C09 follow-up: reproduce the stock initializer failure with the evaluator's special-character password, provide a prompt-versioned bootstrap example with safe SQL encoding and authenticated readiness, and verify exact credentials, wrong-password rejection and data retention over Stop/Start against the pinned MySQL image. Keep raw supplied values, single-response evaluation, execution policy and saved Compose bytes unchanged. See [scope and verification](mysql-bootstrap.md).
+
+MySQL verification: the stock-command C09 regression reproduced `START_FAILED`; both replacement-bootstrap Docker checks passed for suite and extended multiline root/application credentials, including authentication/denial, exact environment delivery and persistence. All 41 provider checks, 89 policy checks, evaluator/driver suites, API type checking and changed-source lint passed. No live inference or deployment was performed; existing saved artifacts are unchanged.
+
 Page-width follow-up: registration, account, configuration list/detail, and terminal views use the full available content width. Login and Create configuration use a centered 35rem maximum width; shared page padding remains.
 
 Page-width verification: all 108 frontend checks, the web type check/production build, changed-source lint/formatting, and whitespace checks passed. Browser layout verification and application deployment were not performed.

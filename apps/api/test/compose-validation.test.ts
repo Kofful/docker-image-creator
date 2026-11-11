@@ -8,6 +8,8 @@ import {
   validateSavedCompose,
 } from "../src/configs/compose.validator";
 import { ComposeValidationFailure } from "../src/configs/compose.provider";
+import { composeMessages } from "../src/configs/compose.prompt";
+import { COMPOSE_POLICY } from "../src/configs/compose.policy";
 import {
   allRequirements,
   fixture,
@@ -18,6 +20,39 @@ import {
 
 const compose = fixture("direct-compose.yaml");
 const all = fixture("direct-compose-all.yaml");
+
+test("MySQL prompt example passes policy and saved-revision validation unchanged", () => {
+  const request = JSON.parse(composeMessages(allRequirements)[1]!.content) as {
+    mysqlBootstrap: {
+      image: string;
+      command: string[];
+      healthcheckTest: string[];
+    };
+  };
+  assert.equal(
+    request.mysqlBootstrap.image,
+    COMPOSE_POLICY.catalog.mysql.image,
+  );
+  const document = parse(all) as {
+    services: { db: { command: string[]; healthcheck: { test: string[] } } };
+  };
+  document.services.db.command = request.mysqlBootstrap.command;
+  document.services.db.healthcheck.test =
+    request.mysqlBootstrap.healthcheckTest;
+  const raw = stringify(document);
+  const artifact = validateCompose(raw, allRequirements);
+  assert.equal(artifact.compose, raw);
+  assert.equal(
+    validateSavedCompose(
+      artifact.metadata,
+      raw,
+      artifact.digest,
+      allRequirements,
+    ).compose,
+    raw,
+  );
+});
+
 type ObjectMap = Record<string, unknown>;
 function object(value: unknown): ObjectMap {
   return value as ObjectMap;
