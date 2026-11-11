@@ -78,7 +78,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - generated-configs:/app/.runtime/configs
-      - ../.runtime/evaluations:/app/.runtime/evaluations
+      - type: bind
+        source: ../.runtime/evaluations
+        target: /app/.runtime/evaluations
+        bind:
+          create_host_path: false
     depends_on:
       api:
         condition: service_healthy
