@@ -21,6 +21,54 @@ import {
 const compose = fixture("direct-compose.yaml");
 const all = fixture("direct-compose-all.yaml");
 
+test("MongoDB prompt example survives YAML serialization and saved validation unchanged", () => {
+  const request = JSON.parse(composeMessages(allRequirements)[1]!.content) as {
+    mongodbHealthcheck: { image: string; healthcheckTest: string[] };
+  };
+  assert.equal(
+    request.mongodbHealthcheck.image,
+    COMPOSE_POLICY.catalog.mongodb.image,
+  );
+  const document = parse(all) as {
+    services: { mongo: { healthcheck: { test: string[] } } };
+  };
+  document.services.mongo.healthcheck.test =
+    request.mongodbHealthcheck.healthcheckTest;
+  const raw = stringify(document);
+  assert.deepEqual(
+    parse(raw).services.mongo.healthcheck.test,
+    request.mongodbHealthcheck.healthcheckTest,
+  );
+  const artifact = validateCompose(raw, allRequirements);
+  assert.equal(
+    validateSavedCompose(
+      artifact.metadata,
+      raw,
+      artifact.digest,
+      allRequirements,
+    ).compose,
+    raw,
+  );
+});
+
+test("C04/C06 unquoted colon-space expressions parse as mappings and fail HEALTH_POLICY", () => {
+  for (const expression of [
+    "mongosh --quiet --eval 'if (db.adminCommand({ping: 1}).ok !== 1) quit(1)'",
+    "quit(db.adminCommand({ping:1}).ok ? 0 : 1)",
+  ]) {
+    const test = parse(`- CMD-SHELL\n- ${expression}\n`) as unknown[];
+    assert.equal(typeof test[1], "object");
+    const document = parse(all);
+    document.services.mongo.healthcheck.test = test;
+    assert.throws(
+      () => validateCompose(stringify(document), allRequirements),
+      (error: unknown) =>
+        error instanceof ComposeValidationFailure &&
+        error.code === "HEALTH_POLICY",
+    );
+  }
+});
+
 test("MySQL prompt example passes policy and saved-revision validation unchanged", () => {
   const request = JSON.parse(composeMessages(allRequirements)[1]!.content) as {
     mysqlBootstrap: {

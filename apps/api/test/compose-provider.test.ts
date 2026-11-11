@@ -181,6 +181,7 @@ test("configured endpoint/model, bounded standard parameters and value-free allo
   };
   assert.deepEqual(task.requirements, input);
   assert.equal("mysqlBootstrap" in task, false);
+  assert.equal("mongodbHealthcheck" in task, false);
   assert.equal(
     task.serviceLabels["docker-image-creator.revision"],
     input.identity.revisionId,

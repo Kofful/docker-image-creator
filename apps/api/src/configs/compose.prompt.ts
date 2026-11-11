@@ -5,8 +5,9 @@ import {
   composeServiceLabels,
 } from "./compose.policy";
 import { MYSQL_BOOTSTRAP_EXAMPLE } from "./mysql-bootstrap.example";
+import { MONGODB_HEALTHCHECK_EXAMPLE } from "./mongodb-healthcheck.example";
 
-export const COMPOSE_PROMPT_VERSION = 4;
+export const COMPOSE_PROMPT_VERSION = 5;
 
 export function composeMessages(input: ComposeGenerationRequirements) {
   // Do not spread private creation requests, even if a caller passes extra fields.
@@ -48,15 +49,17 @@ export function composeMessages(input: ComposeGenerationRequirements) {
         'YAML SYNTAX: Use spaces for indentation, with consistent two-space levels and unique mapping keys. Quote string values that could be parsed as booleans or numbers, including restart: "no", the policy label "2", and logging max-file: "2". Keep booleans and numeric resource limits in their policy types. Use valid YAML quoting or block scalars for command arguments containing colons, quotes or newlines.',
         "Use one mapping document; no aliases, anchors, merge keys, custom tags, unknown fields, extra services, builds, env_file, downloads or package installation. Use only libraries/tools shipped in the pinned images. Bash, curl and database client libraries are not guaranteed in application images; Node and Python standard libraries are available.",
         "Require an actual health check on every service, using CMD plus arguments or CMD-SHELL plus one expression. Use the exact policy health timing. Commands are nonempty argument arrays. Dependencies may only be mappings with condition: service_healthy; no cycles or self references.",
+        "HEALTHCHECK SERIALIZATION: Every healthcheck.test element must parse as a YAML string. For each inline program or shell expression use a literal block scalar (|-), or quote the ENTIRE argument with valid YAML escaping. Quotes inside JavaScript or shell code do not quote the enclosing YAML scalar. In particular, unquoted { ping: 1 } and ? 0 : 1 contain colon-space and turn a sequence item into a YAML mapping. CMD-SHELL takes exactly two string elements: CMD-SHELL and one complete expression. CMD executes arguments directly without shell expansion: $$VARIABLE becomes a literal $VARIABLE argument, not its value. Read environment values inside Node/mongosh with process.env, Python with os.environ, or use CMD-SHELL with quoted variables. Use only executables shipped in the selected pinned image; never invent /healthcheck.sh or other script paths.",
         "Use only the private network named stack; no default or external networks. Apply resourceLabels to the network and volumes, and serviceLabels to each container. No other labels or global resource names.",
         "Do not publish any ports: omit ports on every service. Services communicate over the private stack network; host publication is unsupported.",
         "Only databases have mounts. For every policy databaseMounts entry create <service>-<suffix> with resourceLabels; mount it using type: volume, source, target and read_only: false. Omit unused top-level volumes.",
         "Environment must be a string-to-string mapping. Each supplied binding must use exactly ${<reference>:?Required value}. Reuse the assigned reference for shared bindings. Do not invent credentials, values, bindings or interpolation references. Private values are deliberately unavailable to you. Values may contain quotes, dollars, backslashes, spaces or line breaks; read them without reinterpreting or losing bytes. Stock image initialization may have character limitations; author robust behavior without inventing or changing credentials.",
         "MySQL requires MYSQL_ROOT_PASSWORD and MYSQL_PASSWORD bindings; public defaults are MYSQL_USER: app and MYSQL_DATABASE: requested database or app. MongoDB requires MONGO_INITDB_ROOT_PASSWORD; public defaults are MONGO_INITDB_ROOT_USERNAME: app and MONGO_INITDB_DATABASE: requested database or app. Assigned user bindings override those public defaults. No other literal environment settings.",
         "MYSQL INITIALIZATION: The pinned image's stock initializer inserts passwords into SQL without safe encoding. Quotes/backslashes can break it. For every MySQL service, copy mysqlBootstrap.command exactly from the request and use mysqlBootstrap.healthcheckTest as healthcheck.test, retaining the policy health timing. These are tested Compose-escaped argument arrays: do not simplify them, change their quoting, or escape their dollars again. They initialize the requested database and credentials using SQL literals under NO_BACKSLASH_ESCAPES, preserve raw environment values and reuse an existing data directory without changing credentials or data. The command prepares directories before dropping to the image's mysql user and reuses its normal server lifecycle. Do not add entrypoint, script files, mounts, temporary credentials or additional environment settings. An initdb SQL file alone cannot fix stock account creation, which runs before initdb files. mysqladmin ping alone does not verify authentication; use the supplied authenticated query health check.",
+        "MONGODB HEALTH: For every MongoDB service copy mongodbHealthcheck.healthcheckTest exactly from the request into healthcheck.test, retaining the policy health timing. Serialize its final multiline JavaScript argument as a YAML literal block scalar (|-). The supplied CMD invokes mongosh directly, reads raw credentials through process.env, authenticates against admin, checks the authentication result and pings the database. Do not substitute an unauthenticated ping, embed credential values in JavaScript or a URI, or put shell variable arguments in CMD. mongodbHealthcheck and mysqlBootstrap are reference data, not Compose fields. Keep the pinned catalog image under service.image and the supplied test under service.healthcheck.test; never add the reference wrapper keys or a healthcheckTest field to Compose.",
         "Escape every container-side dollar sign as $$ in command/health strings. Only declared opaque references may use Compose interpolation. Never interpolate resource identities.",
         `Prompt version: ${COMPOSE_PROMPT_VERSION}. Policy:\n${JSON.stringify(COMPOSE_POLICY, null, 2)}`,
-        "Before responding, silently check that the output is one complete YAML mapping with the exact project name, requested services and images, all required settings and labels, valid secret references, and no text outside the document. Return the YAML now.",
+        "Before responding, silently check that the output is one complete YAML mapping with the exact project name, requested services and images, all required settings and labels, valid secret references, and no text outside the document. Check every healthcheck.test item is a string after YAML parsing, every script argument is quoted as a whole or uses a block scalar, database checks authenticate, and reference examples are copied without extra escaping. Return the YAML now.",
       ].join("\n\n"),
     },
     {
@@ -69,6 +72,11 @@ export function composeMessages(input: ComposeGenerationRequirements) {
           serviceLabels: composeServiceLabels(requirements.identity),
           ...(requirements.services.some((service) => service.image === "mysql")
             ? { mysqlBootstrap: MYSQL_BOOTSTRAP_EXAMPLE }
+            : {}),
+          ...(requirements.services.some(
+            (service) => service.image === "mongodb",
+          )
+            ? { mongodbHealthcheck: MONGODB_HEALTHCHECK_EXAMPLE }
             : {}),
           outputContract: {
             format:

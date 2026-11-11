@@ -2,6 +2,8 @@
 
 Body logging: every LLM HTTP attempt now writes paired redacted request/response JSON files below `<reportDirectory>/llm/<userId>/<configId>/<revisionId>/`, including HTTP errors and policy-rejected output. Each case reports `llmLogDirectory`. Bodies stay separate from terminal summaries and never enter the database. See [locations, redaction and limits](../llm-body-logging.md).
 
+Prompt version 5 addresses the unquoted MongoDB health-check arguments rejected in operator run `74a14ba3-48ea-4124-9e33-894ee98857da` (C04/C06, both `HEALTH_POLICY`). It supplies an authenticated `mongosh` reference and explicit whole-argument YAML quoting/block-scalar guidance. The example's Docker regression is separate from model scoring; a fresh evaluation after rebuilding/recreating the runner must report prompt version 5 to measure model compliance. Historical results and first-response scoring remain unchanged.
+
 Step 6 is implemented in `apps/api/evaluation`. This is an explicitly invoked test runner. It shares the OpenAI-compatible adapter, strict Compose validator, and privileged Docker runtime driver, without booting Nest, connecting to MySQL, or creating application records. The production API does not gain Docker access. The operator supplied a [completed live baseline](run-074b86dd.md) with nine rate-limit failures, one policy rejection and task success 0/10; no generated workload started.
 
 ## Run in the existing runner

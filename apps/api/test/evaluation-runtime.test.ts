@@ -19,6 +19,102 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args): pass
 http.server.HTTPServer(('0.0.0.0',8000),Handler).serve_forever()`;
 
+class MongoHealthcheckDriver extends EvaluationDockerDriver {
+  async check(
+    target: RuntimeTarget,
+    test: string[],
+    signal: AbortSignal,
+    denied = false,
+  ) {
+    return this.command(
+      [
+        "exec",
+        ...(denied
+          ? [
+              "--env",
+              "MONGO_INITDB_ROOT_PASSWORD=deliberately-incorrect-test-password",
+            ]
+          : []),
+        await this.terminalContainer(target, "db"),
+        ...test.slice(1),
+      ],
+      signal,
+    );
+  }
+}
+
+test(
+  "MongoDB prompt healthcheck authenticates raw credentials and rejects an incorrect password",
+  { timeout: 3 * 60000 },
+  async (context) => {
+    const prepared = prepareCase(CASES[3]!);
+    for (const entry of prepared.requirements.environment)
+      prepared.secrets[entry.reference] = "test-$'\"\\ # café";
+    const driver = new MongoHealthcheckDriver();
+    const fixture = runtimeFixture(
+      prepared.requirements.identity,
+      prepared.requirements.services,
+      prepared.requirements.environment,
+    );
+    const request = JSON.parse(
+      composeMessages(prepared.requirements)[1]!.content,
+    ) as {
+      mongodbHealthcheck: { healthcheckTest: string[] };
+    };
+    const document = parse(fixture.manifest);
+    document.services.db.healthcheck.test =
+      request.mongodbHealthcheck.healthcheckTest;
+    const artifact = validateCompose(
+      stringify(document),
+      prepared.requirements,
+    );
+    const target = {
+      ...fixture,
+      manifest: artifact.compose,
+      digest: artifact.digest,
+      metadata: artifact.metadata,
+      secrets: prepared.secrets,
+    };
+    const signal = context.signal;
+    try {
+      await driver.launch(target, signal);
+      assert.ok(
+        await driver.probe(
+          target,
+          prepared,
+          { id: "environment", service: "db", kind: "environment" },
+          signal,
+        ),
+      );
+      await driver.check(
+        target,
+        request.mongodbHealthcheck.healthcheckTest,
+        signal,
+      );
+      await assert.rejects(
+        driver.check(
+          target,
+          request.mongodbHealthcheck.healthcheckTest,
+          signal,
+          true,
+        ),
+      );
+      await driver.stop(target, signal);
+      await driver.launch(target, signal);
+      await driver.check(
+        target,
+        request.mongodbHealthcheck.healthcheckTest,
+        signal,
+      );
+    } finally {
+      await driver.cleanup(
+        { ...target, secrets: {} },
+        AbortSignal.timeout(60000),
+      );
+    }
+  },
+);
+
 // Additional regression probes read the whole password, including trailing
 // newlines. The fixed C09 benchmark probes intentionally read a single line.
 class MysqlBootstrapDriver extends EvaluationDockerDriver {
