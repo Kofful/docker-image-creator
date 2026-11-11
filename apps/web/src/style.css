@@ -26,9 +26,6 @@ a,
 input {
   -webkit-tap-highlight-color: transparent;
 }
-.config-card {
-  max-width: 54rem;
-}
 .config-card select,
 .config-card textarea {
   width: 100%;
@@ -90,13 +87,17 @@ main {
   flex: 1;
 }
 .auth-card {
-  max-width: 30rem;
+  width: 100%;
   margin: 0 auto;
   padding: clamp(1.5rem, 5vw, 2.5rem);
   border: 1px solid #dbe3e8;
   border-radius: 1rem;
   background: white;
   box-shadow: 0 12px 40px #18304408;
+}
+.login-card,
+.create-config-card {
+  max-width: 35rem;
 }
 .eyebrow {
   font-size: 0.75rem;

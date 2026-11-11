@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onScopeDispose, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, useId, watch } from "vue";
 import type {
   GenerationResponse,
   RuntimeOperationResponse,
@@ -31,6 +31,21 @@ const statusUnavailable = ref(false);
 const generating = computed(() =>
   ["queued", "running"].includes(props.generationStatus),
 );
+const disabled = computed(
+  () => deleting.value || generating.value || !!props.disabledReason,
+);
+const tooltipId = useId();
+const hovered = ref(false);
+const focused = ref(false);
+const tooltipDismissed = ref(false);
+const tooltipText = computed(() => {
+  if (deleting.value)
+    return "Deleting… Waiting for cleanup confirmation. Persistent data is preserved.";
+  if (props.disabledReason) return props.disabledReason;
+  if (generating.value)
+    return "Deletion is available after generation finishes.";
+  return "";
+});
 let key: string | undefined;
 let operationId: string | undefined;
 let abort: AbortController | undefined;
@@ -165,38 +180,58 @@ onScopeDispose(() => {
 
 <template>
   <div class="config-delete" :class="{ compact: iconOnly }">
-    <button
-      type="button"
-      class="danger"
-      :aria-label="`Delete ${name}`"
-      :aria-busy="deleting"
-      :title="deleting ? 'Deleting…' : `Delete ${name}`"
-      :disabled="deleting || generating || !!disabledReason"
-      @click="remove"
+    <span
+      class="delete-tooltip-trigger"
+      :tabindex="disabled && tooltipText ? 0 : undefined"
+      :aria-label="disabled ? `Delete ${name}` : undefined"
+      :aria-describedby="tooltipText ? tooltipId : undefined"
+      @mouseenter="
+        hovered = true;
+        tooltipDismissed = false;
+      "
+      @mouseleave="hovered = false"
+      @focusin="
+        focused = true;
+        tooltipDismissed = false;
+      "
+      @focusout="focused = false"
+      @keydown.esc.stop="tooltipDismissed = true"
     >
-      <svg
-        v-if="iconOnly"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
+      <button
+        type="button"
+        class="danger"
+        :aria-label="`Delete ${name}`"
+        :aria-busy="deleting"
+        :title="iconOnly && !tooltipText ? `Delete ${name}` : undefined"
+        :aria-describedby="tooltipText ? tooltipId : undefined"
+        :disabled="disabled"
+        @click="remove"
       >
-        <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
-      </svg>
-      <template v-else>{{ deleting ? "Deleting…" : "Delete" }}</template>
-    </button>
-    <p v-if="disabledReason" class="field-help">{{ disabledReason }}</p>
-    <p v-else-if="generating" class="field-help">
-      Deletion is available after generation finishes.
-    </p>
-    <p v-if="deleting" role="status">
-      Deleting… Waiting for cleanup confirmation. Persistent data is preserved.
-    </p>
+        <svg
+          v-if="iconOnly"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
+        </svg>
+        <template v-else>{{ deleting ? "Deleting…" : "Delete" }}</template>
+      </button>
+      <span
+        v-if="tooltipText"
+        v-show="(hovered || focused) && !tooltipDismissed"
+        :id="tooltipId"
+        role="tooltip"
+        class="delete-tooltip"
+        v-text="tooltipText"
+      />
+    </span>
     <button
       v-if="statusUnavailable"
       type="button"
@@ -212,6 +247,33 @@ onScopeDispose(() => {
 .config-delete button {
   width: auto;
 }
+.delete-tooltip-trigger {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  vertical-align: top;
+}
+.delete-tooltip-trigger button:disabled {
+  pointer-events: none;
+}
+.delete-tooltip {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  width: max-content;
+  max-width: min(20rem, calc(100vw - 4rem));
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.4rem;
+  background: #183044;
+  color: white;
+  box-shadow: 0 4px 12px #18304426;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .danger {
   background: #972f35;
 }
@@ -220,6 +282,11 @@ onScopeDispose(() => {
 }
 .compact {
   display: contents;
+}
+.compact .delete-tooltip {
+  right: 0;
+  left: auto;
+  transform: none;
 }
 .compact button {
   display: inline-flex;

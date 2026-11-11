@@ -77,7 +77,10 @@ describe("configuration views", () => {
     const router = createAppRouter(pinia, createMemoryHistory());
     await router.push(path);
     await router.isReady();
-    wrapper = mount(App, { global: { plugins: [pinia, router] } });
+    wrapper = mount(App, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router] },
+    });
     await flushPromises();
     return router;
   }
@@ -421,15 +424,29 @@ describe("configuration views", () => {
       await open("/configs");
       const button = wrapper!.get('button[aria-label="Delete My starter"]');
       expect(button.attributes("disabled")).toBeDefined();
-      expect(wrapper!.text()).toContain(
+      const trigger = wrapper!.get(".delete-tooltip-trigger");
+      const tooltip = wrapper!.get('[role="tooltip"]');
+      expect(tooltip.isVisible()).toBe(false);
+      expect(trigger.attributes("tabindex")).toBe("0");
+      expect(button.attributes("aria-describedby")).toBe(
+        tooltip.attributes("id"),
+      );
+      await trigger.trigger("focusin");
+      expect(tooltip.isVisible()).toBe(true);
+      expect(tooltip.text()).toBe(
         "Deletion is available after generation finishes.",
       );
+      await trigger.trigger("keydown", { key: "Escape" });
+      expect(tooltip.isVisible()).toBe(false);
+      await trigger.trigger("focusout");
       await button.trigger("click");
       expect(confirm).not.toHaveBeenCalled();
       fetchMock.mockResolvedValueOnce(json([config]));
       await wrapper!.get("button.secondary").trigger("click");
       await flushPromises();
       expect(button.attributes("disabled")).toBeUndefined();
+      expect(wrapper!.find('[role="tooltip"]').exists()).toBe(false);
+      expect(trigger.attributes("tabindex")).toBeUndefined();
     },
   );
 

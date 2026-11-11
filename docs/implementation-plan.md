@@ -1,5 +1,13 @@
 # Implementation plan
 
+Page-width follow-up: registration, account, configuration list/detail, and terminal views use the full available content width. Login and Create configuration use a centered 35rem maximum width; shared page padding remains.
+
+Page-width verification: all 108 frontend checks, the web type check/production build, changed-source lint/formatting, and whitespace checks passed. Browser layout verification and application deployment were not performed.
+
+Configuration UI follow-up: Delete help (disabled reasons, generation restrictions, and cleanup information) appears in hover/focus tooltips on list and detail controls. Disabled controls have a keyboard-focusable wrapper; Escape dismisses the tooltip. Deletion guards and visible error alerts are unchanged.
+
+Tooltip verification: all 108 frontend checks passed, including hover, focus, Escape dismissal, and disabled-state updates. Web type checking/production build, changed-source ESLint/Prettier, and whitespace checks passed. No browser smoke or application deployment was performed.
+
 Single-response generation follow-up: the user removed validation-driven repair. Config creation now requests one logical model response, captures it before validation, and fails on invalid content without another content request. Later worker ticks do not retry failed creation. The repair argument, feedback prompt and new-log repair flag have been removed; body-log version 2 omits that flag while existing files/records remain untouched. Transient network/HTTP retries retain their existing three-attempt bound and shared five-minute deadline. This supersedes earlier one-repair requirements and historical descriptions below.
 
 Single-response verification: 41 mocked provider/body-log checks, 23 evaluator/driver checks and 88 policy checks passed. API integration passed 123 checks with one capability-test skip after updating the old two-capture expectation to one. Invalid YAML and policy rejection retain one encrypted response, publish no revision/artifact, and remain failed after later queue ticks. Transport retries remain bounded; no validation feedback or replacement prompt is sent. Workspace type checks/lint and standalone evaluator compilation passed. No live inference or application deployment was performed.

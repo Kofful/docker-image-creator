@@ -141,7 +141,7 @@ onUnmounted(() => {
 
 <style scoped>
 .terminal-page {
-  width: min(100%, 90rem);
+  width: 100%;
   margin: 0 auto;
 }
 .terminal-header {

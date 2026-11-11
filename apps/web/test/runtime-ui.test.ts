@@ -124,7 +124,10 @@ describe("configuration runtime controls", () => {
     const router = createAppRouter(pinia, createMemoryHistory());
     await router.push(`/configs/${config.id}`);
     await router.isReady();
-    wrapper = mount(App, { global: { plugins: [pinia, router] } });
+    wrapper = mount(App, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router] },
+    });
     await flushPromises();
     return router;
   }
@@ -389,10 +392,18 @@ describe("configuration runtime controls", () => {
       expect(deleteButton().attributes("disabled") !== undefined).toBe(
         state !== "stopped",
       );
-      if (state !== "stopped")
-        expect(wrapper!.text()).toContain(
+      if (state !== "stopped") {
+        const trigger = wrapper!.get(".delete-tooltip-trigger");
+        const tooltip = wrapper!.get('[role="tooltip"]');
+        expect(tooltip.isVisible()).toBe(false);
+        await trigger.trigger("mouseenter");
+        expect(tooltip.isVisible()).toBe(true);
+        expect(tooltip.text()).toContain(
           "Stop the configuration before deleting it",
         );
+        await trigger.trigger("mouseleave");
+        expect(tooltip.isVisible()).toBe(false);
+      }
       if (state === "stopped") return;
       await deleteButton().trigger("click");
       expect(

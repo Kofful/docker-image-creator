@@ -48,7 +48,11 @@ async function submit() {
 </script>
 
 <template>
-  <section class="auth-card" aria-labelledby="auth-title">
+  <section
+    class="auth-card"
+    :class="{ 'login-card': !registering }"
+    aria-labelledby="auth-title"
+  >
     <p class="eyebrow">Your container workspace</p>
     <h1 id="auth-title" ref="heading" tabindex="-1">
       {{ registering ? "Create your account" : "Welcome back" }}

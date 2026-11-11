@@ -100,7 +100,7 @@ async function submit() {
 }
 </script>
 <template>
-  <section class="auth-card config-card">
+  <section class="auth-card config-card create-config-card">
     <h1>Create configuration</h1>
     <p class="notice">
       {{

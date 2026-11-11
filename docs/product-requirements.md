@@ -21,6 +21,8 @@ Agreed execution behavior: one running configuration per user with no global cou
 
 Protect application routes, preserve form state on recoverable failures, show loading and empty states, and provide keyboard-accessible forms. The server remains authoritative for authentication and ownership.
 
+Login and Create configuration use a centered 35rem maximum width within the shared page padding. Registration, account, configuration list/detail, and terminal pages use the full available content width without a page-width cap.
+
 ## Builder inputs
 
 For each service collect a unique DNS-safe name, catalog image family/type, supported runtime/language or database name/user settings, and environment bindings. Users supply every declared value before generation, with a purpose and optional shared assignments. Mask values by default. Validate input completeness using the shared contract; send only binding metadata and opaque references to the model. Submit confidential values through the dedicated fields, never through Instructions or purposes.
