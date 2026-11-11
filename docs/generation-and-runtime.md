@@ -1,84 +1,29 @@
-# Generation and runtime
+# Generation and runtime workflow
 
-[ADR 0002](adr/0002-compose-only-generation.md) records the accepted public-image, single-document approach. Custom Dockerfiles/builds from ADR 0001 are deferred. The current [configuration API](configuration-api.md) implements direct model-authored Compose and supplied encrypted values. Automatic product Docker validation remains planned.
+Generation, explicit deployment and testing are separate workflows. [Architecture](architecture.md) describes components; the API references define request details.
 
-## Implemented direct generation
+## Generate and save
 
-[ADR 0004](adr/0004-direct-llm-compose-generation.md) and the [implementation plan](llm-compose-plan.md) replace the procedural service-spec/compiler and runtime regeneration with directly model-authored Compose through the [OpenAI-compatible Modal adapter](openai-compatible-adapter.md). Validate the complete document before persistence and again before execution, using its exact stored text/digest and derived lifecycle metadata. Users supply required environment values/shared bindings during creation; confidential values stay encrypted and outside model requests. Product generation validates one model response. Invalid output fails creation without a replacement request or template fallback; transient HTTP retries remain bounded. Old template-generated configurations are unsupported after rollout; there is no conversion path. The user subsequently chose to reject published ports and preserve isolation; prior explicit-port requirements are superseded.
+1. User selects 1–4 approved services, supplies required environment values/shared bindings and optional instructions.
+2. API validates input, encrypts values and queues a durable job. The browser polls its ID.
+3. API worker sends value-free requirements, exact server identities/catalog/policy and opaque references to the [LLM adapter](openai-compatible-adapter.md).
+4. One model response is captured encrypted, then [strictly validated](compose-validation.md). Invalid content fails with no repair/fallback. Transient HTTP retries are bounded separately.
+5. Accepted original bytes/digest/derived metadata become an immutable revision and private artifact. Status reports `runtimeValidation: not_performed`; generation makes no Docker calls.
 
-The implemented [ten-case evaluation](llm-compose-evaluation.md) is testing only: a terminal command prints all results and writes files without database persistence. It measures first-response policy acceptance, healthy startup, and independent task success with disposable resources. It does not add automatic Docker trials to ordinary generation. Live inference and the real-model benchmark remain unverified.
+[Configuration API](configuration-api.md) and [supplied values](supplied-environment.md) cover persistence, polling, confidentiality and limits.
 
-## Implemented generation milestone
+## Deploy and interact
 
-- A Configuration has one to four Services selected from Node.js, Python, MySQL, and MongoDB. Category, runtime/language, and database engine are distinct settings. Java and additional image families remain deferred.
-- `POST /configs` persists the owned configuration and encrypted generation input, then returns 202 with a generation ID. Replays with the same owner-scoped idempotency key return the original job; changed input returns 409.
-- A background API worker claims MySQL jobs through transactions and two durable global slots. Per-user admission allows one queued/running job; a user may retain at most 20 configurations.
-- The OpenAI-compatible provider returns complete Compose directly using the configured Modal endpoint/model. Provider tools cannot execute Docker, shell, filesystem, or database operations.
-- Complete returned output is encrypted and retained before validation, including rejected content. Parse/schema/catalog checks reject unknown fields, changed image/settings selections, forbidden mounts and build instructions. Model-authored container commands are permitted within the strict document policy. The adapter bounds documents to 1 MiB and rejects malformed, oversized, or truncated responses.
-- Strict validation checks the complete model-authored document against the pinned catalog, requested services, opaque value bindings and isolation policy. It never renders or patches Compose. Model commands use in-image tools/libraries; no additional source file or Dockerfile is generated.
-- Compose is the original model-authored YAML 1.2 document, preserved without serialization or inserted defaults. UUID paths, 0700 directories, 0600 files, symlink checks, a flushed temporary file, and rename protect artifact writes. Only after the file is saved do the immutable initial revision and successful job status commit together.
-- Failed generation retains database evidence and removes uncommitted files. Incomplete cleanup is recorded and retried. Queued jobs survive restart; expired running leases fail and are fenced from publication rather than silently calling the provider again.
-- Vue creation/list/detail views use short authenticated requests and poll until terminal status. Temporary network/server failures retry with backoff without another submission. Navigation cancels polling, not the persisted job; reopening resumes status checks.
+Explicit Start commits a durable operation after owner/revision/admission checks. Runner revalidates the saved document and independently stored bindings, then executes its original bytes with private supplied-value injection. It pulls approved images, waits up to 120 seconds for health, and leaves the deployment running. Runner is the only product process with Docker access.
 
-Generation `succeeded` currently means a DB revision and Compose file were saved. Responses explicitly report `provider: "openai"` and the configured model and `runtimeValidation: "not_performed"`. This is separate from readiness observed after explicit Start; no live benchmark is claimed.
+One configuration per user holds a running reservation; pending, partial and unknown state retain it until all services are verified stopped. Operations serialize with idempotency, leases and fencing. API/runner restarts preserve workloads; service exit/host reboot require explicit Start. Failed Start attempts scoped rollback while retaining data.
 
-## Implemented limits
+Services communicate only within their configuration's internal isolated bridge. Host publication is rejected. [Connect](terminal-api.md) opens a ticket-authorized Docker exec shell through API/runner; no SSH or published port is involved. Stop preserves named volumes. Delete requires stopped resources, verifies cleanup before hiding the configuration, and retains production volumes/recovery records. See [runtime API](runtime-api.md) and [saved execution](saved-compose-runtime.md).
 
-| Limit                                           | Default                                       |
-| ----------------------------------------------- | --------------------------------------------- |
-| Services per configuration                      | 4                                             |
-| Retained configurations per user                | 20                                            |
-| Outstanding queued/running generations per user | 1                                             |
-| Active generations sharing the MySQL database   | 2                                             |
-| Generation deadline                             | 5 minutes, superseding the earlier 60 seconds |
-| Lease grace after deadline                      | 30 seconds                                    |
-| Queued-job lifetime                             | 15 minutes                                    |
-| Worker scan interval                            | 1 second                                      |
-| Returned response size                          | 1 MiB                                         |
-| Optional instructions                           | 16,000 characters                             |
-| Browser HTTP request deadline                   | 10 seconds per request                        |
-| Browser status interval / maximum retry backoff | 2 seconds / 30 seconds                        |
-| Overall browser polling deadline                | None; server owns job deadlines               |
+## Evaluate separately
 
-Full request validation, artifact layout, error handling, and test commands are in [configuration API](configuration-api.md).
+The [ten-case terminal evaluator](evaluation/terminal-runner.md) shares provider/validator/driver code, creates disposable resources, uses independent behavior probes, and writes reports without database records. It runs only when explicitly invoked. [History](history.md) separates deterministic fixture success from live model results.
 
-## Compose and secret policy
+## Deferred behavior
 
-The model must include server-owned project identities and resource labels, one internal project-scoped bridge with isolated gateway mode, and named database volumes. Generated services never join the application's infrastructure network. Strict validation rejects missing or changed settings; runtime independently inspects ownership, networks, mounts and resource enforcement. All services have 0.5 CPU, 512 MiB memory, 128 PIDs, and bounded JSON logging (two 5 MiB files). Four services fit the 2 CPU/2 GiB aggregate runtime budget. The scoped Docker lifecycle smoke verifies same-stack connectivity and outbound, host-service and cross-stack denial; see [verification evidence and limits](saved-compose-runtime.md#verification).
-
-Deny privileged mode, host namespaces/networking, devices, Docker sockets, arbitrary bind mounts, external networks/volumes, custom container identities, source uploads, dependency installation, Dockerfiles, build contexts, and unsupported Compose fields. Published ports are rejected; all services use only their private stack network. Image tags are pinned in the compiler-independent catalog. Compose validation and actual workload readiness are separate checks.
-
-Users supply database passwords and other declared environment values before generation. Encrypt them separately and expose only opaque binding references to the model, public revisions, previews and Compose artifacts. Start decrypts and supplies values privately under server-generated process keys; no plaintext secret/environment file or generated password is created. Inputs and complete original responses use AES-256-GCM with record-specific authenticated context. `CONFIG_ENCRYPTION_KEY` provisioning and backup are required; rotation/multiple key versions are not implemented. Agents must not inspect protected environment files or configure real provider credentials implicitly.
-
-## Implemented manual deployments
-
-The [runtime API](runtime-api.md) implements Start/Stop/status, per-service observations, configuration-detail controls, and a private runner included in the default Compose stack, subject to supported-host Docker verification. Run user services alongside application containers through that runner, as recorded in [ADR 0003](adr/0003-shared-host-execution.md), for trusted local accounts. Start launches a lasting deployment and waits for the model-authored health checks; Stop preserves data for the next Start. Generation still saves revisions without invoking Docker. Deletion removes stopped containers/networks/artifacts while preserving volumes. [Container terminals](terminal-api.md) are implemented through runner-managed Docker exec. Logs and explicit persistent-data deletion remain planned.
-
-Agreed lifecycle rules:
-
-- Reject published ports; use private service DNS and authenticated container terminals.
-- Failed Start stops services launched by that attempt, preserves volumes and configuration files, and reports bounded diagnostics and any cleanup failures separately.
-- Running workloads survive API/runner restarts. Unexpected service exits or a host reboot require an explicit Start; report observed state without automatic relaunch.
-- Admit one running configuration per user with no global running-count quota. Keep the reservation through starting, stopping, partial, and unknown states until verifying all services stopped; retain per-service limits and bounded operation execution.
-- DELETE rejects active/unknown deployments and queues owned stopped-resource/artifact removal. Cleanup stays visible/retryable until verified complete, then releases saved-config quota. Named volumes and recovery metadata remain preserved; explicit persistent-data deletion is still a separate future action.
-
-Execution revalidates the original saved document, digest and metadata against stored requirements/bindings and executes those exact bytes without another generation call. Deployment manifests copy the immutable revision. The [saved execution boundary](saved-compose-runtime.md) defines secret injection, policy 2 inspection and the unsupported legacy cutoff. Engine 28+ is required. Terminals inherit container environment and permissions; the user declined terminal idle/lifetime/count quotas.
-
-The UI opens an authenticated container shell, including the `mysql` CLI for database administration, through runner-managed Docker exec. Direct LLM generation is integrated in source; the [first live baseline](evaluation/run-074b86dd.md) completed with nine rate-limit failures and one policy rejection.
-
-## Later Docker validation slice
-
-The longer-term target still includes an automatic temporary trial after generation, implemented separately after the manual deployment lifecycle:
-
-1. Only the private runner accesses Docker. Recheck ownership, policy, digests, secret references, quotas, resource labels, and allowed image versions before execution. Run fixed executables with argument arrays and a restricted environment; never concatenate untrusted text into host shell commands.
-2. Each trial, including explicit revalidation, gets fresh attempt-owned resources/data. It must not touch a lasting deployment or implicitly reuse its volumes.
-3. Pull approved images and start the trial. Every service must pass a template-specific readiness check, then remain running for a ten-second observation period. Process state alone is not readiness. Database readiness probes are still a runner prerequisite.
-4. Stop successful services and retain their files/stopped containers. Runtime validation success requires verifying that the temporary services have stopped.
-5. On failure, retain the configuration in MySQL and remove only verified attempt-owned containers/networks before deleting generated files. Preserve named volumes until an explicit data-deletion action. If cleanup fails, expose `cleanup_pending` and remaining resources, retaining needed recovery files. Never use global prune or delete shared images/cache.
-6. An infrastructure outage records failed verification without declaring the saved bundle invalid. Explicit revalidation may reuse the immutable bundle without another LLM call. No automatic model repair is planned initially.
-
-Accepted runner defaults are two minutes for readiness, ten seconds for observation, 30 seconds for stop, and 64 KiB retained diagnostics per stage. Operation leases, fencing, reconciliation, disk/admission quotas, port reservations, log redaction, and cleanup must be implemented/tested with disposable resources before this phase is complete. A later lasting deployment starts explicitly after review.
-
-## Deferred work
-
-The selected OpenAI-compatible adapter, direct Compose validator/runtime, supplied values, and terminal evaluation are integrated. Actual inference and a live ten-case report require operator-provided process credentials. Automatic product Docker validation, revision editing/history/export, secret rotation, explicit persistent-data deletion, full application deployment, and browser end-to-end verification remain pending. The private runner, manual lifecycle, scoped four-image lifecycle/probe tests, stopped-resource deletion and terminal authorization are implemented and tested. The dedicated trusted local-host deployment boundary still applies; Docker access is privileged and is not a hostile multi-tenant sandbox.
+Automatic temporary product validation is not implemented. Any future trial must use fresh attempt-owned resources, separate readiness/task checks and verified cleanup before success, without modifying a lasting deployment. Infrastructure failure must leave a revision unverified rather than declare it invalid. General editing/export, secret rotation and explicit production-volume deletion remain deferred.

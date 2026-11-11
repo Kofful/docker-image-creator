@@ -1,50 +1,38 @@
-# OpenAI-compatible Compose inference
+# OpenAI-compatible LLM adapter
 
-The application uses the pinned `openai` JavaScript SDK behind `OpenAICompatibleGenerationProvider`. Both API generation and the explicitly invoked evaluator in the existing runner use this adapter. The operator selects a Modal OpenAI-compatible Chat Completions endpoint. This supersedes the original OpenRouter-only provider, fixed free Gemma slug and zero-price routing extension; no alternative provider or model is selected automatically. The [original benchmark](evaluation/run-074b86dd.md) remains an unchanged historical OpenRouter result.
+`OpenAICompatibleGenerationProvider` uses the pinned OpenAI JavaScript SDK for both API generation and explicitly invoked evaluation. Current deployment targets an operator-configured Modal-compatible Chat Completions endpoint/model. It supersedes the [historical OpenRouter adapter](openrouter-adapter.md); no default endpoint/model, alternate provider or pricing extension is used.
 
 ## Configuration
 
-Set these server-side variables through operator-managed deployment configuration:
+| Variable          | Required value                                                                                             |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `OPENAI_BASE_URL` | HTTPS API base including `/v1`, e.g. `https://your-endpoint.modal.run/v1`; SDK appends `/chat/completions` |
+| `OPENAI_API_KEY`  | Endpoint's bearer credential, according to its deployment's authentication contract                        |
+| `OPENAI_MODEL`    | Exact served model identifier                                                                              |
 
-```dotenv
-OPENAI_BASE_URL=https://your-endpoint.modal.run/v1
-OPENAI_API_KEY=<your-endpoint-bearer-token>
-OPENAI_MODEL=<your-served-model-name>
-```
+The URL must exclude embedded credentials, query and fragment. Missing/invalid settings fail `PROVIDER_NOT_CONFIGURED` without an HTTP call; application startup does not invoke inference or require these settings. `OPENROUTER_API_KEY` is not consumed.
 
-The example URL is illustrative. Use the API base from your Modal deployment, including its `/v1` path; the SDK appends `/chat/completions`. Use the exact model identifier served by that endpoint. For Modal Endpoints with proxy authentication, the API key is the combined proxy token ID and secret, as described in [Modal's endpoint documentation](https://modal.com/docs/guide/endpoints). Custom deployed servers may use their own bearer token. Creating/deploying Modal resources or issuing live inference requests is outside this change.
+Compose passes settings only to API and runner evaluation. Web, application MySQL and Docker subprocesses/workloads never receive them. Application/evaluator code reads process variables without loading environment files. Operator configuration is documented in [.env.example](../.env.example); agent checks must not load private files. Rebuild/recreate API/runner with the usual project/files after changes, keeping runner idle; see [setup](local-setup.md).
 
-All three variables are required when inference is invoked. The adapter accepts HTTPS URLs without embedded credentials, query strings or fragments. Missing/invalid settings return `PROVIDER_NOT_CONFIGURED` without an HTTP call, including before evaluator Docker preflight. Missing configuration does not block application startup. There is no default OpenAI endpoint, model, credential, or OpenRouter fallback. `OPENROUTER_API_KEY` is no longer consumed.
+## Request contract
 
-Compose passes these variables only to API generation and runner evaluation. Web, infrastructure MySQL, generated workloads and restricted Docker subprocess environments do not receive them. Application code and the evaluator read process variables only; they never load environment files. Agents must not read or edit protected environment files. Use the secret-free root `.env.example` to document settings.
+The SDK calls nonstreaming Chat Completions with configured model and `max_completion_tokens: 16384`. Temperature is omitted. Prompt v5 requests raw complete YAML with exact identities/policy/catalog, selected services, instructions and named opaque bindings. Only allowlisted metadata is included; actual supplied values/request-local keys are excluded. Instructions/purposes remain model-visible.
 
-After the human operator updates deployment configuration, rebuild/recreate API and runner using the existing application project/files:
+MySQL requests include the [bootstrap reference](mysql-bootstrap.md) introduced in v4. MongoDB requests include an authenticated `mongosh` reference reading credentials from `process.env` and pinging against `admin`. Whole script arguments require YAML block scalars or complete quoting; internal shell/JavaScript quotes do not protect colon-space from YAML parsing. References are instructions for the model, never a compiler or post-generation rewrite. Prompt version is independent of revision/policy version 2.
 
-```bash
-docker compose --env-file .env -f infra/docker-compose.yml up -d --build --no-deps api runner
-docker compose --env-file .env -f infra/docker-compose.yml exec runner node dist-evaluation/evaluation/cli.js
-```
+Product generation and evaluation accept one content response. Invalid JSON, invalid Compose or policy rejection ends creation without feedback or replacement. Strict validation precedes persistence and execution, and accepted content remains byte-for-byte unchanged.
 
-This assumes infrastructure is already running. Include the usual development override when applicable. Keep runner idle before recreating it. Evaluation stays inside the existing runner; no host pnpm is needed.
+## Limits and metadata
 
-## Requests and validation
+| Control             | Behavior                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Generation deadline | Five minutes shared with caller deadline/cancellation                                                          |
+| HTTP retries        | SDK retries disabled; adapter allows at most three attempts for network/408/429/5xx failures                   |
+| Backoff             | 500/1000 ms fallback; usable `Retry-After` honored up to 30 seconds; larger waits fail rather than retry early |
+| Bodies              | Request log ≤1 MiB; response ≤8 MiB; extracted Compose ≤1 MiB                                                  |
+| Rejections          | Invalid UTF-8/JSON/schema, tool calls, empty/truncated/incomplete content, reported-model mismatch, redirects  |
+| Errors/logging      | Fixed safe public codes; SDK logging off; bounded [redacted bodies](llm-body-logging.md) stored privately      |
 
-The adapter calls `client.chat.completions.create` with the configured model, `stream: false`, `max_completion_tokens: 16384`, and prompt version 5. It omits `temperature`, leaving sampling behavior to the selected model's default. The prompt explicitly identifies the generation task, requires raw YAML starting with the supplied project name, explains the Compose mappings and scalar types, and excludes prose, Markdown and follow-up questions. The readable JSON request carries only allowlisted requirements, label mappings and an explicit output contract. Requests containing MySQL also carry a [bootstrap reference](mysql-bootstrap.md), with Compose-escaped command arguments and an authenticated query health check. MongoDB requests also carry an authenticated `mongodbHealthcheck` reference that reads credentials from `process.env` and checks authentication against `admin` before ping. Script arguments must use whole-argument YAML quoting or literal block scalars; internal shell/JavaScript quotes do not protect colon-space from YAML parsing. The model must include these examples in its document; the application never inserts or rewrites them after generation. The revision schema and execution policy remain version 2; prompt versioning is separate.
+New results/jobs use `provider: openai` to identify the transport, not an OpenAI-hosted model. Safe metadata retains configured/reported model, timings, HTTP attempts and available integer token usage. Historical records retain their original provider/model. Evaluation omits key/endpoint URL from reports.
 
-It sends standard Chat Completions fields only. OpenRouter-specific `provider.max_price` is removed. The model authors the complete Compose document. Actual supplied environment values remain excluded from requests, and strict YAML/policy validation still precedes persistence and execution. Product generation and evaluation both use one model response. Invalid JSON, invalid Compose or policy rejection ends the attempt without a replacement request. Prompt instructions guide the model; they do not guarantee valid output.
-
-SDK retries are disabled (`maxRetries: 0`) so the adapter retains the existing maximum of three HTTP attempts per content response, the shared five-minute generation deadline, cancellation, 500/1000 ms fallback waits and `Retry-After` handling. A requested wait above 30 seconds still fails explicitly. Network errors and HTTP 408/429/5xx permit transient retry; permanent errors fail immediately. No content repair occurs for provider failures.
-
-The adapter uses the SDK's raw response access to enforce its own 8 MiB JSON body and 1 MiB document limits before parsing. Invalid UTF-8/JSON, malformed choices, tool calls, empty content, incomplete finishes and a different reported model are rejected. Null tool metadata is accepted as absent. Completed content is returned byte-for-byte unchanged. Request/response bodies are now captured as [private redacted JSON files](llm-body-logging.md), including rejected output and HTTP errors. Non-success bodies are discarded before SDK error parsing after the bounded diagnostic capture; only status and retry timing determine retries. Redirects are rejected. SDK logging is explicitly disabled, and raw errors, credentials and response bodies are never attached to public errors.
-
-Results and new generation jobs use `provider: "openai"` to identify the OpenAI-compatible transport, not an OpenAI-hosted model. The configured and reported model IDs, timing, attempts and available integer token usage are retained. Historical OpenRouter records retain their original provider/model on reads. Shared transport contracts now allow a model string rather than the former fixed Gemma literal. No database migration is needed. Evaluation records the configured model and standard generation parameters in terminal/file reports; it excludes the key and endpoint URL. Full redacted HTTP bodies are stored separately in the run’s `llm/` directory. Prompt, suite, policy, scoring, Docker isolation and cleanup behavior are unchanged.
-
-## Verification
-
-`pnpm test:compose-provider` exercises the actual SDK with mocked HTTP: configured routing/authentication/standard parameters, secret-free prompts, exact output, model/usage checks, missing/unsafe configuration, bounded error bodies, retries, deadline/cancellation and single-response failure behavior. `pnpm test:evaluation` covers orchestration, cleanup and configured-model reporting. Routine checks require no credentials or live inference. A successful test run does not establish availability or model quality at the operator's Modal endpoint.
-
-Verification: 32 mocked SDK/provider checks, 21 evaluator/driver checks, 108 frontend checks and nine contract checks passed. The API suite passed 123 checks with one capability-test skip on a rerun without the concurrent image build; the first run hit two existing short-deadline tests under build load. Workspace type checks/lint and changed-file formatting passed. The runner image built with the frozen lockfile and passed help/missing-configuration CLI checks in disposable network-disabled containers. Production/development Compose configuration passed with explicit dummy settings and no environment-file loading. No live Modal request, credential configuration or application deployment was performed.
-
-SDK behavior was checked against the official [OpenAI TypeScript SDK reference](https://developers.openai.com/api/reference/typescript). Modal URL, authentication and model-name behavior were checked against the [Modal endpoint guide](https://modal.com/docs/guide/endpoints).
-
-Single-response verification: 41 mocked provider/body-log checks, 23 evaluator/driver checks and 88 policy checks passed. API integration passed 123 checks with one capability-test skip after updating the old two-capture expectation to one. Invalid YAML and policy rejection retain one encrypted response, publish no revision/artifact, and remain failed after later queue ticks. Transport retries remain bounded; no validation feedback or replacement prompt is sent. Workspace type checks/lint and standalone evaluator compilation passed. No live inference or application deployment was performed.
+`pnpm test:compose-provider` uses the actual SDK with mocked HTTP for request routing/authentication, private-field exclusion, exact output, metadata, retries/limits/cancellation and one-response behavior. `pnpm test:evaluation` verifies orchestration/reporting. [History](history.md) records passes; mocks do not establish live endpoint availability or model quality.
